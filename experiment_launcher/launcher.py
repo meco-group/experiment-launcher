@@ -12,6 +12,8 @@ from joblib import Parallel, delayed
 
 from experiment_launcher.exceptions import ResultsDirException
 
+import torch.multiprocessing as mp
+import yaml
 
 class Launcher(object):
     """
@@ -25,7 +27,8 @@ class Launcher(object):
                  n_exps_in_parallel=1,
                  conda_env=None, gres=None, constraint=None, partition=None,
                  begin=None, use_timestamp=True, compact_dirs=False,
-                 check_results_directories=True
+                 check_results_directories=True,
+                 results_dir_already_given=False
                  ):
         """
         Constructor.
@@ -71,6 +74,7 @@ class Launcher(object):
         self._constraint = constraint
         self._partition = partition
         self._begin = begin
+        self._results_dir_already_given = results_dir_already_given
 
         self._experiment_list = list()
 
@@ -324,7 +328,8 @@ echo "...done."
             params_dict = deepcopy(default_params_dict)
             exp_new_without_underscore = self.remove_last_underscores_dict(exp)
             params_dict.update(exp_new_without_underscore)
-            params_dict['results_dir'] = self._generate_results_dir(self._exp_dir_local, exp)
+            if not self._results_dir_already_given:
+                params_dict['results_dir'] = self._generate_results_dir(self._exp_dir_local, exp)
             for seed in seeds:
                 params_dict['seed'] = int(seed)
                 yield params_dict
