@@ -14,6 +14,7 @@ from experiment_launcher.exceptions import ResultsDirException
 
 import torch.multiprocessing as mp
 import yaml
+import json
 
 class Launcher(object):
     """
@@ -89,7 +90,7 @@ class Launcher(object):
         self._check_results_directories = check_results_directories
 
         self._exp_dir_slurm = self._exp_dir_local
-        if os.getenv("USER"):
+        if os.getenv("$VSC_SCRATCH"):
             scratch_dir = os.path.join('/work', 'scratch', os.getenv('USER'))
             if os.path.isdir(scratch_dir):
                 self._exp_dir_slurm = os.path.join(scratch_dir, self._exp_name)
@@ -155,7 +156,6 @@ class Launcher(object):
         experiment_args += ' \\'
 
         seed_code = f'\t\t--seed $(({self._start_seed} + $SLURM_ARRAY_TASK_ID)) \\'
-        result_dir_code = '\t\t--results_dir $1'
 
         code = f"""\
 #!/usr/bin/env bash
@@ -200,8 +200,17 @@ echo "########################################################################"
 """
 
         code += f"""\
-            
-wait # This will wait until both scripts finish
+wait 
+echo "########################################################################"
+echo "All scripts finished."
+"""
+        if self._exp_dir_slurm != self._exp_dir_local:
+            os.makedirs(self._exp_dir_local, exist_ok=True)
+            code += f"""\
+            echo "Copying slurm logs to local directory..."
+            'cp -r {self._exp_dir_slurm} {self._exp_dir_local}'
+            """
+        code += """
 echo "########################################################################"
 echo "...done."
 """
@@ -266,7 +275,7 @@ echo "...done."
                     print(params)
                     traceback.print_exc()
 
-            params_dict = get_experiment_default_params(experiment)
+            params_dict = get_experiment_default_params(experiment, as_string=False)
 
             Parallel(n_jobs=self._n_exps_in_parallel)(delayed(experiment_wrapper)(deepcopy(params))
                                                       for params in self._generate_exp_params(params_dict))
@@ -281,7 +290,7 @@ echo "...done."
         if test:
             self._test_experiment_local()
         else:
-            default_params_dict = get_experiment_default_params(experiment)
+            default_params_dict = get_experiment_default_params(experiment, as_string=False)
 
             for params in self._generate_exp_params(default_params_dict):
                 try:
@@ -349,10 +358,7 @@ echo "...done."
         for key, value in exp.items():
             new_command = '--' + key + ' '
 
-            if isinstance(value, list):
-                new_command += ' '.join(map(str, value)) + ' '
-            else:
-                new_command += str(value) + ' '
+            new_command += "'" + json.dumps(value, separators=(',', ':')) + "'" + ' '
 
             command_line += new_command
 
@@ -385,38 +391,29 @@ echo "...done."
         return module.__file__
 
 
-def get_experiment_default_params(func):
+def get_experiment_default_params(func, as_string=True):
     signature = inspect.signature(func)
     defaults = {}
     for k, v in signature.parameters.items():
         if v.default is not inspect.Parameter.empty:
-            defaults[k] = v.default
+            if as_string:
+                defaults[k] = json.dumps(v.default, separators=(',', ':'))
+            else:
+                defaults[k] = v.default
     return defaults
 
 
 def translate_experiment_params_to_argparse(parser, func):
-    annotation_to_argparse = {
-        'str': str,
-        'int': int,
-        'float': float,
-        'bool': bool,
-        'list': None
-    }
     arg_experiments = parser.add_argument_group('Experiment')
     signature = inspect.signature(func)
     for k, v in signature.parameters.items():
         if k not in ['seed', 'results_dir']:
             if v.default is not inspect.Parameter.empty:
-                if v.annotation.__name__ in annotation_to_argparse:
-                    if v.annotation.__name__ == 'bool':
-                        arg_experiments.add_argument(f"--{str(k)}", type=lambda x: bool(strtobool(x)),
-                                                     nargs='?', const=v.default, default=v.default)
-                    elif v.annotation.__name__ == 'list':
-                        arg_experiments.add_argument(f"--{str(k)}", nargs='+')
-                    else:
-                        arg_experiments.add_argument(f"--{str(k)}", type=annotation_to_argparse[v.annotation.__name__])
-                else:
-                    raise NotImplementedError(f'{v.annotation.__name__} not found in annotation_to_argparse.')
+                # Convert the default argument to a JSON string
+                json_default = json.dumps(v.default, separators=(',', ':'))
+                # Add the argument as a string, where its value will be JSON stringified
+                arg_experiments.add_argument(f"--{str(k)}", type=str, default=json_default)
+    
     return parser
 
 
@@ -482,7 +479,7 @@ def parse_args(func):
     parser = translate_experiment_params_to_argparse(parser, func)
 
     parser = add_launcher_base_args(parser)
-    parser.set_defaults(**get_experiment_default_params(func))
+    parser.set_defaults(**get_experiment_default_params(func, as_string=True))
 
     if has_kwargs(func):
         args, unknown = parser.parse_known_args()
@@ -491,10 +488,36 @@ def parse_args(func):
         args = vars(args)
         args.update(kwargs)
 
+        # Now, we unload JSON string arguments into their original Python types
+        for k, v in args.items():
+            if isinstance(v, str):
+                # print(f'Loading {k} as {v}')
+                try:
+                    # Try to load the JSON string into the original data type
+                    args[k] = json.loads(v)
+                    # print(f'Loaded {k} as {args[k]}')
+                except json.JSONDecodeError:
+                    # print(f'Failed to load {k}, keeping it as string: {v}')
+                    pass  # Leave as string if not a valid JSON
+
         return args
     else:
         args = parser.parse_args()
-        return vars(args)
+
+        # Unload JSON string arguments into their original Python types
+        args = vars(args)
+        for k, v in args.items():
+            if isinstance(v, str):
+                # print(f'Loading {k} as {v}')
+                try:
+                    # Try to load the JSON string into the original data type
+                    args[k] = json.loads(v)
+                    # print(f'Loaded {k} as {args[k]}')
+                except json.JSONDecodeError:
+                    # print(f'Failed to load {k}, keeping it as string: {v}')
+                    pass  # Leave as string if not a valid JSON
+
+        return args
 
 
 def run_experiment(func, args=None):
