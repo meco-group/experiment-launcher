@@ -16,6 +16,7 @@ import torch.multiprocessing as mp
 import yaml
 import json
 import git
+import sys
 
 class Launcher(object):
     """
@@ -150,8 +151,8 @@ class Launcher(object):
             env_code += f'conda activate {self._conda_env}\n\n'
             python_code = f'python {self._exp_file_path} \\'
         else:
-            env_code += 'source env/bin/activate\n\n'
-            python_code = f'python  {self._exp_file_path} \\'
+            env_code += f'source {sys.prefix}/bin/activate\n\n'
+            python_code = f'PYTHONPATH={git.Repo(search_parent_directories=True).working_tree_dir} python  {self._exp_file_path} \\'
 
         experiment_args = '\t\t'
         experiment_args += r'${@: 2}'
