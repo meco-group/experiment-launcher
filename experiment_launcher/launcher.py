@@ -15,6 +15,7 @@ from experiment_launcher.exceptions import ResultsDirException
 import torch.multiprocessing as mp
 import yaml
 import json
+import git
 
 class Launcher(object):
     """
@@ -90,8 +91,8 @@ class Launcher(object):
         self._check_results_directories = check_results_directories
 
         self._exp_dir_slurm = self._exp_dir_local
-        if os.getenv("$VSC_SCRATCH"):
-            scratch_dir = os.path.join('/work', 'scratch', os.getenv('USER'))
+        if os.getenv("VSC_SCRATCH"):
+            scratch_dir = os.getenv("VSC_SCRATCH")
             if os.path.isdir(scratch_dir):
                 self._exp_dir_slurm = os.path.join(scratch_dir, self._exp_name)
         os.makedirs(self._exp_dir_slurm, exist_ok=not self._check_results_directories)
@@ -138,18 +139,19 @@ class Launcher(object):
             print(self._constraint)
             constraint_option += '#SBATCH --constraint=' + str(self._constraint) + '\n'
 
-        conda_code = ''
+        env_code = ''
         if self._conda_env:
             if os.path.exists(f'{os.getenv("HOME")}/miniconda3'):
-                conda_code += f'eval \"$({os.getenv("HOME")}/miniconda3/bin/conda shell.bash hook)\"\n'
+                env_code += f'eval \"$({os.getenv("HOME")}/miniconda3/bin/conda shell.bash hook)\"\n'
             elif os.path.exists(f'{os.getenv("HOME")}/anaconda3'):
-                conda_code += f'eval \"$({os.getenv("HOME")}/anaconda/bin/conda shell.bash hook)\"\n'
+                env_code += f'eval \"$({os.getenv("HOME")}/anaconda/bin/conda shell.bash hook)\"\n'
             else:
                 raise Exception('You do not have a /home/USER/miniconda3 or /home/USER/anaconda3 directories')
-            conda_code += f'conda activate {self._conda_env}\n\n'
+            env_code += f'conda activate {self._conda_env}\n\n'
             python_code = f'python {self._exp_file_path} \\'
         else:
-            python_code = f'python3  {self._exp_file_path} \\'
+            env_code += 'source env/bin/activate\n\n'
+            python_code = f'python  {self._exp_file_path} \\'
 
         experiment_args = '\t\t'
         experiment_args += r'${@: 2}'
@@ -166,6 +168,9 @@ class Launcher(object):
 # Optional parameters
 {project_name_option}{partition_option}{begin_option}{gres_option}{constraint_option}
 # Mandatory parameters
+#SBATCH --account=intro_vsc35986
+#SBATCH --cluster=wice
+#SBATCH --partition=batch_sapphirerapids
 #SBATCH -J {self._exp_name}
 #SBATCH -a 0-{self._n_seeds - 1}
 #SBATCH -t {self._duration}
@@ -180,7 +185,9 @@ class Launcher(object):
 echo "Starting Job $SLURM_JOB_ID, Index $SLURM_ARRAY_TASK_ID"
 
 # Program specific arguments
-{conda_code}
+module load cluster/wice/batch_sapphirerapids
+module load Python
+{env_code}
 
 """
         code += f"""\
@@ -205,10 +212,10 @@ echo "########################################################################"
 echo "All scripts finished."
 """
         if self._exp_dir_slurm != self._exp_dir_local:
-            os.makedirs(self._exp_dir_local, exist_ok=True)
+            local_dir = os.path.join(os.getenv('VSC_DATA'), git.Repo(search_parent_directories=True).working_tree_dir.split('/')[-1], self._exp_dir_local)
+            os.makedirs(local_dir, exist_ok=True)
             code += f"""\
-            echo "Copying slurm logs to local directory..."
-            'cp -r {self._exp_dir_slurm} {self._exp_dir_local}'
+            cp -r {self._exp_dir_slurm}/ {local_dir}/
             """
         code += """
 echo "########################################################################"
