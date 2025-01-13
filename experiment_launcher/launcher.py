@@ -85,6 +85,7 @@ class Launcher(object):
             self._exp_name += datetime.datetime.now().strftime('_%Y-%m-%d_%H-%M-%S')
 
         base_dir = './logs' if base_dir is None else base_dir
+        self._base_dir = base_dir
         self._exp_dir_local = os.path.join(base_dir, self._exp_name)
 
         # tracks the results directories
@@ -213,7 +214,7 @@ echo "########################################################################"
 echo "All scripts finished."
 """
         if self._exp_dir_slurm != self._exp_dir_local:
-            local_dir = os.path.join(os.getenv('VSC_DATA'), git.Repo(search_parent_directories=True).working_tree_dir.split('/')[-1], self._exp_dir_local)
+            local_dir = os.path.join(os.getenv('VSC_DATA'), git.Repo(search_parent_directories=True).working_tree_dir.split('/')[-1], self._base_dir)
             os.makedirs(local_dir, exist_ok=True)
             code += f"""\
             cp -r {self._exp_dir_slurm}/ {local_dir}/
