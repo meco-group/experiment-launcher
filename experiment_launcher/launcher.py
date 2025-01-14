@@ -161,7 +161,7 @@ class Launcher(object):
         experiment_args += r'${@: 2}'
         experiment_args += ' \\'
 
-        seed_code = f'\t\t--seed $(({self._start_seed} + $SLURM_ARRAY_TASK_ID)) \\' if self._seed_in_array else ''
+        seed_code = f'\t\t--seed $(({self._start_seed} + $SLURM_ARRAY_TASK_ID)) ' if self._seed_in_array else ''
 
         code = f"""\
 #!/usr/bin/env bash
@@ -204,8 +204,7 @@ echo "########################################################################"
             code += f"""\
                 
 {python_code}
-{seed_code}
-\t\t{command_line}  &
+\t\t{seed_code + command_line} &
 
 """
 
