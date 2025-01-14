@@ -31,7 +31,8 @@ class Launcher(object):
                  conda_env=None, gres=None, constraint=None, partition=None,
                  begin=None, use_timestamp=True, compact_dirs=False,
                  check_results_directories=True,
-                 results_dir_already_given=False
+                 results_dir_already_given=False,
+                 seed_in_array=False
                  ):
         """
         Constructor.
@@ -78,6 +79,7 @@ class Launcher(object):
         self._partition = partition
         self._begin = begin
         self._results_dir_already_given = results_dir_already_given
+        self._seed_in_array = seed_in_array
 
         self._experiment_list = list()
 
@@ -159,7 +161,7 @@ class Launcher(object):
         experiment_args += r'${@: 2}'
         experiment_args += ' \\'
 
-        seed_code = f'\t\t--seed $(({self._start_seed} + $SLURM_ARRAY_TASK_ID)) \\'
+        seed_code = f'\t\t--seed $(({self._start_seed} + $SLURM_ARRAY_TASK_ID)) \\' if self._seed_in_array else ''
 
         code = f"""\
 #!/usr/bin/env bash
@@ -174,7 +176,7 @@ class Launcher(object):
 #SBATCH --cluster=wice
 #SBATCH --partition=batch_sapphirerapids
 #SBATCH -J {self._exp_name}
-#SBATCH -a 0-{self._n_seeds - 1}
+#SBATCH -a 0-{self._n_seeds - 1 if self._seed_in_array else 0}
 #SBATCH -t {self._duration}
 #SBATCH --ntasks 1
 #SBATCH --cpus-per-task {self._n_cores}
@@ -226,16 +228,39 @@ echo "...done."
         return code
 
     def save_slurm(self, command_line_list=None, idx: str = None):
-        code = self.generate_slurm(command_line_list)
+        if self._seed_in_array:
+            code_l = [self.generate_slurm(command_line_list)]
+        else:
+            cmd_list = []
+            code_l = []
+            for command_line in command_line_list:
+                nb_seeds = self._n_seeds
+                seed = self._start_seed
+                while seed < nb_seeds + self._start_seed:
+                    cmd_line = f'--seed {seed} {command_line}'
+                    cmd_list.append(cmd_line)
+                    seed += 1
 
-        label = f"_{idx}" if idx is not None else ""
-        script_name = f'slurm_{self._exp_name}{label}.sh'
-        full_path = os.path.join(self._exp_dir_slurm_files, script_name)
+                    if len(cmd_list) >= self._n_exps_in_parallel:
+                        code_l.append(self.generate_slurm(cmd_list))
+                        cmd_list = []                
 
-        with open(full_path, "w") as file:
-            file.write(code)
+            if len(cmd_list) > 0:
+                code_l.append(self.generate_slurm(cmd_list))
+        
+        full_paths = []
+        for id, code in enumerate(code_l):
 
-        return full_path
+            label = f"_{idx}_{id}" if idx is not None else ""
+            script_name = f'slurm_{self._exp_name}{label}.sh'
+            full_path = os.path.join(self._exp_dir_slurm_files, script_name)
+
+            with open(full_path, "w") as file:
+                file.write(code)
+            
+            full_paths.append(full_path)
+
+        return full_paths
 
     def _run_slurm(self, test):
         # Create slurm directories for sbatch and log files
@@ -255,8 +280,7 @@ echo "...done."
                 command_line_arguments = self._convert_to_command_line(exp_new_without_underscore)
                 results_dir = self._generate_results_dir(self._exp_dir_slurm, exp)
                 command_line_l.append(f'--results_dir {results_dir} {command_line_arguments}')
-            slurm_files_path_l.append(self.save_slurm(command_line_l,
-                                                      str(i).zfill(len(str(len(experiment_list_chunked))))))
+            slurm_files_path_l += self.save_slurm(command_line_l,str(i).zfill(len(str(len(experiment_list_chunked)))))
 
         # Launch slurm files in parallel
         for slurm_file_path in slurm_files_path_l:
