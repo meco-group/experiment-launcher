@@ -174,7 +174,6 @@ class Launcher(object):
 # Mandatory parameters
 #SBATCH --account=intro_vsc35986
 #SBATCH --cluster=wice
-#SBATCH --partition=batch_sapphirerapids
 #SBATCH -J {self._exp_name}
 #SBATCH -a 0-{self._n_seeds - 1 if self._seed_in_array else 0}
 #SBATCH -t {self._duration}
