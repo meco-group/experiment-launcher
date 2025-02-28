@@ -1,7 +1,7 @@
 import time
 from itertools import product
 
-from experiment_launcher import Launcher, is_local
+from src import Launcher, is_local
 
 LOCAL = is_local()
 TEST = False

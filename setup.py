@@ -13,6 +13,6 @@ with open(path.join(here, 'requirements.txt'), encoding='utf-8') as f:
 
 setup(name='experiment_launcher',
       description='Experiment Launcher',
-      packages=['experiment_launcher'],
+      packages=['src'],
       install_requires=requires_list,
 )

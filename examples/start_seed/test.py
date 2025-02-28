@@ -2,7 +2,7 @@ import os
 
 import wandb
 
-from experiment_launcher import run_experiment, single_experiment
+from src import run_experiment, single_experiment
 
 
 # This decorator creates results_dir as results_dir/seed, and saves the experiment arguments into a file.

@@ -2,7 +2,7 @@ import logging
 import os
 from functools import wraps, partial
 
-from experiment_launcher.utils import save_args, start_wandb, create_results_dir
+from src.utils import save_args, start_wandb, create_results_dir
 
 
 def wrapper_single_experiment(exp_func, save_args_yaml=False, use_logging=False,

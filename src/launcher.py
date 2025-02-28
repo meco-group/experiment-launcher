@@ -10,7 +10,7 @@ from importlib import import_module
 import numpy as np
 from joblib import Parallel, delayed
 
-from experiment_launcher.exceptions import ResultsDirException
+from src.exceptions import ResultsDirException
 
 import torch.multiprocessing as mp
 import yaml
@@ -26,13 +26,14 @@ class Launcher(object):
 
     def __init__(self, exp_name, exp_file, n_seeds, start_seed=0, n_cores=1, memory_per_core=2000,
                  days=0, hours=24, minutes=0, seconds=0,
-                 project_name=None, base_dir=None,
+                 project_name=None, cluster=None, account=None, base_dir=None,
                  n_exps_in_parallel=1,
-                 conda_env=None, gres=None, constraint=None, partition=None,
+                 conda_env=None, gres=None, constraint=None, partition=None, initial_module_load=None,
                  begin=None, use_timestamp=True, compact_dirs=False,
                  check_results_directories=True,
                  results_dir_already_given=False,
-                 seed_in_array=False
+                 seed_is_slurm_array_task_id=False,
+                 after_run_dir=None
                  ):
         """
         Constructor.
@@ -50,7 +51,10 @@ class Launcher(object):
             seconds (int): number of seconds the experiment can last (in slurm)
             project_name (str): name of the project for slurm. This is important if you have
                 different projects (e.g. in the hhlr cluster)
-            base_dir (str): path to directory to save the results (in hhlr results are saved to /work/scratch/$USER)
+            cluster (str): name of the cluster in which to run the experiments
+            account (str): name of the account in the cluster
+            base_dir (str): path to directory to save the results
+            after_run_dir (str): path to directory to save the results after the run
             n_exps_in_parallel (int): number of experiment configurations to run in parallel.
                 If running in the cluster, and the gpu is selected, then it is the number of jobs in each slurm file
                 (e.g. for multiple experiments in the same gpu)
@@ -58,11 +62,13 @@ class Launcher(object):
             gres (str): request cluster resources. E.g. to add a GPU in the IAS cluster specify gres='gpu:rtx2080:1'
             constraint (str): constraint for the slurm job. E.g. to add a GPU in the IAS cluster: constraint='rtx2080'
             partition (str, None): the partition to use in case of slurm execution. If None, no partition is specified.
+            initial_module_load (list(str)): modules to load before running the experiment
             begin (str): start the slurm experiment at a given time (see --begin in slurm docs)
             use_timestamp (bool): add a timestamp to the experiment name
             compact_dirs (bool): If true, only the parameter value is used for the directory name.
             check_results_directories (bool): check if the results directories clash. Use with precaution.
-
+            results_dir_already_given (bool): if True, the results directory is already given in the experiment configuration
+            seed_is_slurm_array_task_id (bool): if True, the slurm array task id is used as the seed
         """
         self._exp_name = exp_name
         self._exp_file = exp_file
@@ -72,6 +78,8 @@ class Launcher(object):
         self._memory_per_core = memory_per_core
         self._duration = Launcher._to_duration(days, hours, minutes, seconds)
         self._project_name = project_name
+        self._cluster = cluster
+        self._account = account
         self._n_exps_in_parallel = n_exps_in_parallel
         self._conda_env = conda_env
         self._gres = gres
@@ -79,7 +87,12 @@ class Launcher(object):
         self._partition = partition
         self._begin = begin
         self._results_dir_already_given = results_dir_already_given
-        self._seed_in_array = seed_in_array
+        self._seed_is_slurm_array_task_id = seed_is_slurm_array_task_id
+        self._after_run_dir = after_run_dir
+        self._initial_module_load = initial_module_load
+
+        if initial_module_load:
+            assert isinstance(initial_module_load, list), "initial_module_load must be a list of strings"
 
         self._experiment_list = list()
 
@@ -142,6 +155,9 @@ class Launcher(object):
         if self._constraint:
             print(self._constraint)
             constraint_option += '#SBATCH --constraint=' + str(self._constraint) + '\n'
+        
+        account = f'#SBATCH --account={self._account}\n' if self._account else ''
+        cluster = f'#SBATCH --cluster={self._cluster}\n' if self._cluster else ''
 
         env_code = ''
         if self._conda_env:
@@ -161,7 +177,9 @@ class Launcher(object):
         experiment_args += r'${@: 2}'
         experiment_args += ' \\'
 
-        seed_code = f'\t\t--seed $(({self._start_seed} + $SLURM_ARRAY_TASK_ID)) ' if self._seed_in_array else ''
+        seed_code = f'\t\t--seed $(({self._start_seed} + $SLURM_ARRAY_TASK_ID)) ' if self._seed_is_slurm_array_task_id else ''
+
+        initial_module_load = '\n'.join([f'module load {module}' for module in self._initial_module_load]) if self._initial_module_load else ''
 
         code = f"""\
 #!/usr/bin/env bash
@@ -172,10 +190,8 @@ class Launcher(object):
 # Optional parameters
 {project_name_option}{partition_option}{begin_option}{gres_option}{constraint_option}
 # Mandatory parameters
-#SBATCH --account=intro_vsc35986
-#SBATCH --cluster=wice
-#SBATCH -J {self._exp_name}
-#SBATCH -a 0-{self._n_seeds - 1 if self._seed_in_array else 0}
+{account}{cluster}#SBATCH -J {self._exp_name}
+#SBATCH -a 0-{self._n_seeds - 1 if self._seed_is_slurm_array_task_id else 0}
 #SBATCH -t {self._duration}
 #SBATCH --ntasks 1
 #SBATCH --cpus-per-task {self._n_cores}
@@ -188,7 +204,7 @@ class Launcher(object):
 echo "Starting Job $SLURM_JOB_ID, Index $SLURM_ARRAY_TASK_ID"
 
 # Program specific arguments
-module load cluster/wice/batch_sapphirerapids
+{initial_module_load}
 module load Python
 {env_code}
 
@@ -213,8 +229,8 @@ wait
 echo "########################################################################"
 echo "All scripts finished."
 """
-        if self._exp_dir_slurm != self._exp_dir_local:
-            local_dir = os.path.join(os.getenv('VSC_DATA'), git.Repo(search_parent_directories=True).working_tree_dir.split('/')[-1], self._base_dir)
+        if self._after_run_dir is not None:
+            local_dir = os.path.join(self._after_run_dir, git.Repo(search_parent_directories=True).working_tree_dir.split('/')[-1], self._base_dir)
             os.makedirs(local_dir, exist_ok=True)
             code += f"""\
             cp -r {self._exp_dir_slurm}/ {local_dir}/
@@ -226,7 +242,7 @@ echo "...done."
         return code
 
     def save_slurm(self, command_line_list=None, idx: str = None):
-        if self._seed_in_array:
+        if self._seed_is_slurm_array_task_id:
             code_l = [self.generate_slurm(command_line_list)]
         else:
             cmd_list = []
