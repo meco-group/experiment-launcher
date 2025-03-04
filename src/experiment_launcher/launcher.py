@@ -12,7 +12,6 @@ from joblib import Parallel, delayed
 
 from experiment_launcher.exceptions import ResultsDirException
 
-import torch.multiprocessing as mp
 import yaml
 import json
 import git
