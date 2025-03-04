@@ -10,7 +10,7 @@ from importlib import import_module
 import numpy as np
 from joblib import Parallel, delayed
 
-from src.exceptions import ResultsDirException
+from experiment_launcher.exceptions import ResultsDirException
 
 import torch.multiprocessing as mp
 import yaml
