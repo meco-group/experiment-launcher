@@ -1,18 +1,16 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 from codecs import open
 from os import path
-
-
-ext_modules = []
 
 here = path.abspath(path.dirname(__file__))
 requires_list = []
 with open(path.join(here, 'requirements.txt'), encoding='utf-8') as f:
-    for line in f:
-        requires_list.append(str(line))
+    requires_list = f.read().splitlines()  # Cleaner way to read requirements
 
-setup(name='experiment_launcher',
-      description='Experiment Launcher',
-      packages=['src'],
-      install_requires=requires_list,
+setup(
+    name='experiment_launcher',
+    description='Experiment Launcher',
+    packages=find_packages(where="src"),  # Automatically find the correct package
+    package_dir={"": "src"},  # Define 'src' as the root
+    install_requires=requires_list,
 )
