@@ -109,9 +109,14 @@ def random_int_with_n_digits(n):
 
 
 def create_results_dir(kwargs, make_dirs_with_seed=True):
-    seed = kwargs['seed']
+    seed = kwargs.get('seed', None)
     results_dir = kwargs['results_dir']
-    assert results_dir is not None and seed is not None, "results_dir and seed must exist"
+    assert results_dir is not None, "results_dir must exist"
+    if seed is None:
+        # warning
+        print("No seed was provided. The results will be saved in the same directory.")
+        make_dirs_with_seed = False
+
     results_dir_new = results_dir
     if make_dirs_with_seed:
         results_dir_new = os.path.join(results_dir_new, str(seed))
