@@ -32,6 +32,7 @@ class Launcher(object):
                  check_results_directories=True,
                  results_dir_already_given=False,
                  seed_is_slurm_array_task_id=False,
+                 seed_is_already_given=False,
                  after_run_dir=None
                  ):
         """
@@ -68,6 +69,7 @@ class Launcher(object):
             check_results_directories (bool): check if the results directories clash. Use with precaution.
             results_dir_already_given (bool): if True, the results directory is already given in the experiment configuration
             seed_is_slurm_array_task_id (bool): if True, the slurm array task id is used as the seed
+            seed_is_already_given (bool): if True, the seed is already given in the experiment configuration
         """
         self._exp_name = exp_name
         self._exp_file = exp_file
@@ -89,6 +91,7 @@ class Launcher(object):
         self._seed_is_slurm_array_task_id = seed_is_slurm_array_task_id
         self._after_run_dir = after_run_dir
         self._initial_module_load = initial_module_load
+        self._seed_is_already_given = seed_is_already_given
 
         if initial_module_load:
             assert isinstance(initial_module_load, list), "initial_module_load must be a list of strings"
@@ -247,16 +250,22 @@ echo "...done."
             cmd_list = []
             code_l = []
             for command_line in command_line_list:
-                nb_seeds = self._n_seeds
-                seed = self._start_seed
-                while seed < nb_seeds + self._start_seed:
-                    cmd_line = f'--seed {seed} {command_line}'
-                    cmd_list.append(cmd_line)
-                    seed += 1
+                if not self._seed_is_already_given:
+                    nb_seeds = self._n_seeds
+                    seed = self._start_seed
+                    while seed < nb_seeds + self._start_seed:
+                        cmd_line = f'--seed {seed} {command_line}'
+                        cmd_list.append(cmd_line)
+                        seed += 1
 
+                        if len(cmd_list) >= self._n_exps_in_parallel:
+                            code_l.append(self.generate_slurm(cmd_list))
+                            cmd_list = []     
+                else:
+                    cmd_list.append(command_line)
                     if len(cmd_list) >= self._n_exps_in_parallel:
                         code_l.append(self.generate_slurm(cmd_list))
-                        cmd_list = []                
+                        cmd_list = []           
 
             if len(cmd_list) > 0:
                 code_l.append(self.generate_slurm(cmd_list))
@@ -385,9 +394,10 @@ echo "...done."
             params_dict.update(exp_new_without_underscore)
             if not self._results_dir_already_given:
                 params_dict['results_dir'] = self._generate_results_dir(self._exp_dir_local, exp)
-            for seed in seeds:
-                params_dict['seed'] = int(seed)
-                yield params_dict
+            if not self._seed_is_already_given:
+                for seed in seeds:
+                    params_dict['seed'] = int(seed)
+                    yield params_dict
 
     @staticmethod
     def remove_last_underscores_dict(exp_dict):
