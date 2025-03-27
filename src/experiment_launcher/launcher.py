@@ -398,6 +398,8 @@ echo "...done."
                 for seed in seeds:
                     params_dict['seed'] = int(seed)
                     yield params_dict
+            else:
+                yield params_dict
 
     @staticmethod
     def remove_last_underscores_dict(exp_dict):
