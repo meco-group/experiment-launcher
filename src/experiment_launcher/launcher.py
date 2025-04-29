@@ -207,7 +207,7 @@ echo "Starting Job $SLURM_JOB_ID, Index $SLURM_ARRAY_TASK_ID"
 
 # Program specific arguments
 {initial_module_load}
-module load Python/3.12.3-GCCcore-13.3.0
+module load Python
 {env_code}
 
 """
