@@ -32,6 +32,7 @@ from experiment_launcher.decorators import (
     single_experiment,
     single_experiment_flat,
     single_experiment_yaml,
+    single_experiment_flat_yaml
 )
 from experiment_launcher.launcher import Launcher, run_experiment, parse_args
 from experiment_launcher.utils import is_local
