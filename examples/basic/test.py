@@ -1,47 +1,49 @@
+"""Basic example experiment using experiment-launcher."""
+
 import os
 
-import wandb
-
-from src import run_experiment, single_experiment
+from experiment_launcher import single_experiment, run_experiment
 
 
-# This decorator creates results_dir as results_dir/seed, and saves the experiment arguments into a file.
 @single_experiment
 def experiment(
-    #######################################
-    env: str = 'env',  # You need to specify the argument type if you use the automatic parser.
-    env_param: str = 'aa',
+    # Experiment parameters
+    env: str = "env",
+    env_param: str = "aa",
     a: int = 1,
     boolean_param: bool = True,
-    some_default_param: str = 'b',
-
+    some_default_param: str = "b",
     debug: bool = True,
-
-    #######################################
-    # MANDATORY
+    
+    # Required parameters
     seed: int = 0,
-    results_dir: str = 'logs',
-
-    #######################################
-    # OPTIONAL
-    # accept unknown arguments
-    **kwargs
+    results_dir: str = "logs",
+    
+    # Accept extra parameters
+    **kwargs,
 ):
-    # EXPERIMENT
-    print(f'DEBUG MODE: {debug}')
-
-    print(f'kwargs: {kwargs}')
-
-    filename = os.path.join(results_dir, 'log_' + str(seed) + '.txt')
-    out_str = f'Running experiment with seed {seed}, env {env}, ' \
-              f'env_param {env_param}, a {a}, ' \
-              f'boolean_param {boolean_param}, some_default_param {some_default_param}'
+    """Example experiment function.
+    
+    This function demonstrates the basic structure of an experiment.
+    The @single_experiment decorator handles:
+    - Creating the results directory with seed subdirectory
+    - Saving experiment arguments to args.json
+    """
+    print(f"DEBUG MODE: {debug}")
+    print(f"kwargs: {kwargs}")
+    
+    filename = os.path.join(results_dir, f"log_{seed}.txt")
+    out_str = (
+        f"Running experiment with seed {seed}, env {env}, "
+        f"env_param {env_param}, a {a}, "
+        f"boolean_param {boolean_param}, some_default_param {some_default_param}"
+    )
     print(out_str)
-    with open(filename, 'w') as file:
-        file.write('Some logs in a log file.\n')
+    
+    with open(filename, "w") as file:
+        file.write("Some logs in a log file.\n")
         file.write(out_str)
 
 
-if __name__ == '__main__':
-    # Leave unchanged
+if __name__ == "__main__":
     run_experiment(experiment)

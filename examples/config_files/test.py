@@ -1,49 +1,45 @@
+"""Example using configuration files with experiment-launcher."""
+
 import os
 
-import wandb
 import yaml
 
-from src import run_experiment, single_experiment_yaml
+from experiment_launcher import single_experiment_yaml, run_experiment
 
 
-# This decorator creates results_dir as results_dir/seed, and saves the experiment arguments into a file.
 @single_experiment_yaml
 def experiment(
-    #######################################
-    config_file_path: str = './configs/config00.yaml',
-
-    some_default_param: str = 'b',
-
+    # Configuration file
+    config_file_path: str = "./configs/config00.yaml",
+    some_default_param: str = "b",
     debug: bool = True,
-
-    #######################################
-    # MANDATORY
+    
+    # Required parameters
     seed: int = 0,
-    results_dir: str = 'logs',
-
-    #######################################
-    # OPTIONAL
-    # accept unknown arguments
-    **kwargs
+    results_dir: str = "logs",
+    
+    # Accept extra parameters (e.g., for wandb)
+    **kwargs,
 ):
-    # EXPERIMENT
-    print(f'DEBUG MODE: {debug}')
-
-    with open(config_file_path, 'r') as f:
-        configs = yaml.load(f, yaml.Loader)
-
-    print('Config file content:')
+    """Experiment that loads parameters from a YAML config file.
+    
+    The @single_experiment_yaml decorator saves args as YAML
+    and enables file logging.
+    """
+    print(f"DEBUG MODE: {debug}")
+    
+    with open(config_file_path) as f:
+        configs = yaml.safe_load(f)
+    
+    print("Config file content:")
     print(configs)
-
-    filename = os.path.join(results_dir, 'log_' + str(seed) + '.txt')
-    out_str = f'Running experiment with seed {seed}'
-    with open(filename, 'w') as file:
-        file.write('Some logs in a log file.\n')
-        file.write(out_str)
-
-    wandb.log({'seed': seed}, step=1)
+    
+    filename = os.path.join(results_dir, f"log_{seed}.txt")
+    with open(filename, "w") as file:
+        file.write("Some logs in a log file.\n")
+        file.write(f"Running experiment with seed {seed}\n")
+        file.write(f"Loaded config: {configs}\n")
 
 
-if __name__ == '__main__':
-    # Leave unchanged
+if __name__ == "__main__":
     run_experiment(experiment)

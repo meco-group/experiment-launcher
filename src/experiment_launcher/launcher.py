@@ -1,133 +1,122 @@
-import argparse
+"""Experiment Launcher - Run experiments locally or on SLURM clusters."""
+
+from __future__ import annotations
+
 import datetime
 import inspect
+import json
 import os
+import sys
 import traceback
-from copy import copy, deepcopy
-from distutils.util import strtobool
+from copy import deepcopy
 from importlib import import_module
+from typing import Any
 
+import git
 import numpy as np
 from joblib import Parallel, delayed
 
+from experiment_launcher.config import (
+    DurationConfig,
+    EnvironmentConfig,
+    LauncherConfig,
+    ResourceConfig,
+    SlurmConfig,
+    Sweep,
+    expand_sweeps,
+)
 from experiment_launcher.exceptions import ResultsDirException
+from pydantic import validate_call
 
-import yaml
-import json
-import git
-import sys
 
-class Launcher(object):
+class Launcher:
+    """Creates and starts experiments with Joblib (local) or SLURM (cluster).
+
+    Example:
+        >>> from experiment_launcher import Launcher, LauncherConfig, Sweep
+        >>> 
+        >>> config = LauncherConfig(
+        ...     exp_name="my_experiment",
+        ...     exp_file="train",
+        ...     n_seeds=3,
+        ... )
+        >>> launcher = Launcher(config)
+        >>> 
+        >>> # Add experiments with sweep parameters
+        >>> launcher.add_experiment(
+        ...     lr=Sweep(values=[1e-3, 1e-4]),
+        ...     batch_size=32,
+        ... )
+        >>> 
+        >>> launcher.run(local=True)
     """
-    Creates and starts jobs with Joblib or SLURM.
 
-    """
-
-    def __init__(self, exp_name, exp_file, n_seeds, start_seed=0, n_cores=1, memory_per_core=2000,
-                 days=0, hours=24, minutes=0, seconds=0,
-                 project_name=None, cluster=None, account=None, base_dir=None,
-                 n_exps_in_parallel=1,
-                 conda_env=None, gres=None, constraint=None, partition=None, initial_module_load=None,
-                 begin=None, use_timestamp=True, compact_dirs=False,
-                 check_results_directories=True,
-                 results_dir_already_given=False,
-                 seed_is_slurm_array_task_id=False,
-                 seed_is_already_given=False,
-                 after_run_dir=None
-                 ):
-        """
-        Constructor.
+    @validate_call
+    def __init__(self, config: LauncherConfig) -> None:
+        """Initialize the launcher with configuration.
 
         Args:
-            exp_name (str): name of the experiment
-            exp_file (str): name of the python module running a single experiment (relative path)
-            n_seeds (int): number of seeds for each experiment configuration
-            start_seed (int): first seed
-            n_cores (int): number of cpu cores
-            memory_per_core (int): maximum memory per core (slurm will kill the job if this is reached)
-            days (int): number of days the experiment can last (in slurm)
-            hours (int): number of hours the experiment can last (in slurm)
-            minutes (int): number of minutes the experiment can last (in slurm)
-            seconds (int): number of seconds the experiment can last (in slurm)
-            project_name (str): name of the project for slurm. This is important if you have
-                different projects (e.g. in the hhlr cluster)
-            cluster (str): name of the cluster in which to run the experiments
-            account (str): name of the account in the cluster
-            base_dir (str): path to directory to save the results
-            after_run_dir (str): path to directory to save the results after the run
-            n_exps_in_parallel (int): number of experiment configurations to run in parallel.
-                If running in the cluster, and the gpu is selected, then it is the number of jobs in each slurm file
-                (e.g. for multiple experiments in the same gpu)
-            conda_env (str): name of the conda environment to run the experiments in
-            gres (str): request cluster resources. E.g. to add a GPU in the IAS cluster specify gres='gpu:rtx2080:1'
-            constraint (str): constraint for the slurm job. E.g. to add a GPU in the IAS cluster: constraint='rtx2080'
-            partition (str, None): the partition to use in case of slurm execution. If None, no partition is specified.
-            initial_module_load (list(str)): modules to load before running the experiment
-            begin (str): start the slurm experiment at a given time (see --begin in slurm docs)
-            use_timestamp (bool): add a timestamp to the experiment name
-            compact_dirs (bool): If true, only the parameter value is used for the directory name.
-            check_results_directories (bool): check if the results directories clash. Use with precaution.
-            results_dir_already_given (bool): if True, the results directory is already given in the experiment configuration
-            seed_is_slurm_array_task_id (bool): if True, the slurm array task id is used as the seed
-            seed_is_already_given (bool): if True, the seed is already given in the experiment configuration
+            config: LauncherConfig instance with all settings
         """
-        self._exp_name = exp_name
-        self._exp_file = exp_file
-        self._start_seed = start_seed
-        self._n_seeds = n_seeds
-        self._n_cores = n_cores
-        self._memory_per_core = memory_per_core
-        self._duration = Launcher._to_duration(days, hours, minutes, seconds)
-        self._project_name = project_name
-        self._cluster = cluster
-        self._account = account
-        self._n_exps_in_parallel = n_exps_in_parallel
-        self._conda_env = conda_env
-        self._gres = gres
-        self._constraint = constraint
-        self._partition = partition
-        self._begin = begin
-        self._results_dir_already_given = results_dir_already_given
-        self._seed_is_slurm_array_task_id = seed_is_slurm_array_task_id
-        self._after_run_dir = after_run_dir
-        self._initial_module_load = initial_module_load
-        self._seed_is_already_given = seed_is_already_given
+        self._config = config
+        self._experiment_list: list[dict[str, Any]] = []
+        self._results_dir_list: list[str] = []
 
-        if initial_module_load:
-            assert isinstance(initial_module_load, list), "initial_module_load must be a list of strings"
+        # Build experiment name with optional timestamp
+        self._exp_name = config.exp_name
+        if config.use_timestamp:
+            self._exp_name += datetime.datetime.now().strftime("_%Y-%m-%d_%H-%M-%S")
 
-        self._experiment_list = list()
+        # Setup directories
+        self._base_dir = config.base_dir
+        self._exp_dir_local = os.path.join(self._base_dir, self._exp_name)
 
-        if use_timestamp:
-            self._exp_name += datetime.datetime.now().strftime('_%Y-%m-%d_%H-%M-%S')
-
-        base_dir = './logs' if base_dir is None else base_dir
-        self._base_dir = base_dir
-        self._exp_dir_local = os.path.join(base_dir, self._exp_name)
-
-        # tracks the results directories
-        self._results_dir_l = []
-        self._check_results_directories = check_results_directories
-
+        # SLURM directory (may be on scratch)
         self._exp_dir_slurm = self._exp_dir_local
         if os.getenv("VSC_SCRATCH"):
             scratch_dir = os.getenv("VSC_SCRATCH")
-            if os.path.isdir(scratch_dir):
+            if scratch_dir and os.path.isdir(scratch_dir):
                 self._exp_dir_slurm = os.path.join(scratch_dir, self._exp_name)
-        os.makedirs(self._exp_dir_slurm, exist_ok=not self._check_results_directories)
 
-        # directories for slurm sbatch files and logs
-        self._exp_dir_slurm_files = os.path.join(self._exp_dir_slurm, "slurm_files")
-        self._exp_dir_slurm_logs = os.path.join(self._exp_dir_slurm, "slurm_logs")
+        os.makedirs(self._exp_dir_slurm,
+                    exist_ok=not config.check_results_directories)
 
-        self._compact_dirs = compact_dirs
+        self._exp_dir_slurm_files = os.path.join(
+            self._exp_dir_slurm, "slurm_files")
+        self._exp_dir_slurm_logs = os.path.join(
+            self._exp_dir_slurm, "slurm_logs")
 
-    def add_experiment(self, **kwargs):
-        self._experiment_list.append(deepcopy(kwargs))
+    def add_experiment(self, **kwargs: Any) -> None:
+        """Add one or more experiment configurations.
 
-    def run(self, local, test=False, sequential=False):
-        if self._check_results_directories:
+        Parameters wrapped in Sweep will generate multiple experiments
+        (Cartesian product of all sweep values).
+
+        Args:
+            **kwargs: Experiment parameters. Use Sweep() to sweep over values.
+
+        Example:
+            >>> launcher.add_experiment(
+            ...     lr=Sweep(values=[1e-3, 1e-4]),
+            ...     batch_size=Sweep(values=[32, 64]),
+            ...     epochs=100,  # Fixed parameter
+            ... )
+            # Generates 4 experiments: (1e-3, 32), (1e-3, 64), (1e-4, 32), (1e-4, 64)
+        """
+        expanded = expand_sweeps(kwargs)
+        self._experiment_list.extend(expanded)
+
+    def run(self, local: bool, test: bool = False, sequential: bool = False) -> None:
+        """Run all added experiments.
+
+        Args:
+            local: If True, run locally with Joblib. If False, submit to SLURM.
+            test: If True, only print commands without executing.
+            sequential: If True and local, run experiments sequentially.
+        """
+        if self._config.check_results_directories:
             self._check_experiments_results_directories()
+
         if local:
             if sequential:
                 self._run_sequential(test)
@@ -136,450 +125,430 @@ class Launcher(object):
         else:
             self._run_slurm(test)
 
-        self._experiment_list = list()
+        self._experiment_list = []
 
-    def generate_slurm(self, command_line_list=None):
-        project_name_option = ''
-        partition_option = ''
-        begin_option = ''
-        gres_option = ''
-        constraint_option = ''
+    def _check_experiments_results_directories(self) -> None:
+        """Check that no two experiments produce the same results directory."""
+        for exp in self._experiment_list:
+            results_dir = self._generate_results_dir(self._exp_dir_local, exp)
+            if results_dir in self._results_dir_list:
+                raise ResultsDirException(exp, results_dir)
+            self._results_dir_list.append(results_dir)
 
-        if self._project_name:
-            project_name_option = '#SBATCH -A ' + self._project_name + '\n'
-        if self._partition:
-            partition_option += f'#SBATCH -p {self._partition}\n'
-        if self._begin:
-            begin_option += f'#SBATCH --begin={self._begin}\n'
-        if self._gres:
-            print(self._gres)
-            gres_option += '#SBATCH --gres=' + str(self._gres) + '\n'
-        if self._constraint:
-            print(self._constraint)
-            constraint_option += '#SBATCH --constraint=' + str(self._constraint) + '\n'
-        
-        account = f'#SBATCH --account={self._account}\n' if self._account else ''
-        cluster = f'#SBATCH --cluster={self._cluster}\n' if self._cluster else ''
+    def _generate_results_dir(self, base_dir: str, exp: dict[str, Any]) -> str:
+        """Generate the results directory path for an experiment.
 
-        env_code = ''
-        if self._conda_env:
-            if os.path.exists(f'{os.getenv("HOME")}/miniconda3'):
-                env_code += f'eval \"$({os.getenv("HOME")}/miniconda3/bin/conda shell.bash hook)\"\n'
-            elif os.path.exists(f'{os.getenv("HOME")}/anaconda3'):
-                env_code += f'eval \"$({os.getenv("HOME")}/anaconda/bin/conda shell.bash hook)\"\n'
+        Uses sweep parameters to create subdirectories.
+        """
+        results_dir = base_dir
+
+        # Use sweep metadata if available
+        sweep_params = exp.get("_sweep_params", [])
+        for name, value in sweep_params:
+            if self._config.compact_dirs:
+                subfolder = str(value)
             else:
-                raise Exception('You do not have a /home/USER/miniconda3 or /home/USER/anaconda3 directories')
-            env_code += f'conda activate {self._conda_env}\n\n'
-            python_code = f'python {self._exp_file_path} \\'
+                subfolder = f"{name}_{value}"
+            subfolder = subfolder.replace("/", "-").replace(" ", "")
+            results_dir = os.path.join(results_dir, subfolder)
+
+        return results_dir
+
+    def _run_local(self, test: bool) -> None:
+        """Run experiments locally using Joblib."""
+        if not test:
+            os.makedirs(self._exp_dir_local, exist_ok=True)
+
+        module = import_module(self._config.exp_file)
+        experiment = module.experiment
+
+        if test:
+            self._test_experiment_local()
         else:
-            env_code += f'source {sys.prefix}/bin/activate\n\n'
-            python_code = f'PYTHONPATH={git.Repo(search_parent_directories=True).working_tree_dir} python  {self._exp_file_path} \\'
+            def experiment_wrapper(params: dict[str, Any]) -> None:
+                try:
+                    experiment(**params)
+                except Exception:
+                    print("Experiment failed with parameters:")
+                    print(params)
+                    traceback.print_exc()
 
-        experiment_args = '\t\t'
-        experiment_args += r'${@: 2}'
-        experiment_args += ' \\'
+            default_params = _get_experiment_default_params(
+                experiment, as_string=False)
+            n_parallel = self._config.resources.n_exps_in_parallel
 
-        seed_code = f'\t\t--seed $(({self._start_seed} + $SLURM_ARRAY_TASK_ID)) ' if self._seed_is_slurm_array_task_id else ''
+            Parallel(n_jobs=n_parallel)(
+                delayed(experiment_wrapper)(deepcopy(params))
+                for params in self._generate_exp_params(default_params)
+            )
 
-        initial_module_load = '\n'.join([f'module load {module}' for module in self._initial_module_load]) if self._initial_module_load else ''
+    def _run_sequential(self, test: bool) -> None:
+        """Run experiments sequentially (single process)."""
+        if not test:
+            os.makedirs(self._exp_dir_local, exist_ok=True)
 
-        code = f"""\
-#!/usr/bin/env bash
+        module = import_module(self._config.exp_file)
+        experiment = module.experiment
 
-###############################################################################
-# SLURM Configurations
-
-# Optional parameters
-{project_name_option}{partition_option}{begin_option}{gres_option}{constraint_option}
-# Mandatory parameters
-{account}{cluster}#SBATCH -J {self._exp_name}
-#SBATCH -a 0-{self._n_seeds - 1 if self._seed_is_slurm_array_task_id else 0}
-#SBATCH -t {self._duration}
-#SBATCH --ntasks 1
-#SBATCH --cpus-per-task {self._n_cores}
-#SBATCH --mem-per-cpu={self._memory_per_core}
-#SBATCH -o {self._exp_dir_slurm_logs}/%A_%a.out
-#SBATCH -e {self._exp_dir_slurm_logs}/%A_%a.err
-
-###############################################################################
-# Your PROGRAM call starts here
-echo "Starting Job $SLURM_JOB_ID, Index $SLURM_ARRAY_TASK_ID"
-
-# Program specific arguments
-{initial_module_load}
-module load Python
-{env_code}
-
-"""
-        code += f"""\
-# Program specific arguments
-
-echo "Running scripts in parallel..."
-echo "########################################################################"
-            
-"""
-        for command_line in command_line_list:
-            code += f"""\
-                
-{python_code}
-\t\t{seed_code + command_line} &
-
-"""
-
-        code += f"""\
-wait 
-echo "########################################################################"
-echo "All scripts finished."
-"""
-        if self._after_run_dir is not None:
-            local_dir = os.path.join(self._after_run_dir, git.Repo(search_parent_directories=True).working_tree_dir.split('/')[-1], self._base_dir)
-            os.makedirs(local_dir, exist_ok=True)
-            code += f"""\
-            cp -r {self._exp_dir_slurm}/ {local_dir}/
-            """
-        code += """
-echo "########################################################################"
-echo "...done."
-"""
-        return code
-
-    def save_slurm(self, command_line_list=None, idx: str = None):
-        if self._seed_is_slurm_array_task_id:
-            code_l = [self.generate_slurm(command_line_list)]
+        if test:
+            self._test_experiment_local()
         else:
-            cmd_list = []
-            code_l = []
-            for command_line in command_line_list:
-                if not self._seed_is_already_given:
-                    nb_seeds = self._n_seeds
-                    seed = self._start_seed
-                    while seed < nb_seeds + self._start_seed:
-                        cmd_line = f'--seed {seed} {command_line}'
-                        cmd_list.append(cmd_line)
-                        seed += 1
+            default_params = _get_experiment_default_params(
+                experiment, as_string=False)
 
-                        if len(cmd_list) >= self._n_exps_in_parallel:
-                            code_l.append(self.generate_slurm(cmd_list))
-                            cmd_list = []     
-                else:
-                    cmd_list.append(command_line)
-                    if len(cmd_list) >= self._n_exps_in_parallel:
-                        code_l.append(self.generate_slurm(cmd_list))
-                        cmd_list = []           
+            for params in self._generate_exp_params(default_params):
+                try:
+                    experiment(**params)
+                except Exception:
+                    print("Experiment failed with parameters:")
+                    print(params)
+                    traceback.print_exc()
 
-            if len(cmd_list) > 0:
-                code_l.append(self.generate_slurm(cmd_list))
-        
-        full_paths = []
-        for id, code in enumerate(code_l):
-
-            label = f"_{idx}_{id}" if idx is not None else ""
-            script_name = f'slurm_{self._exp_name}{label}.sh'
-            full_path = os.path.join(self._exp_dir_slurm_files, script_name)
-
-            with open(full_path, "w") as file:
-                file.write(code)
-            
-            full_paths.append(full_path)
-
-        return full_paths
-
-    def _run_slurm(self, test):
-        # Create slurm directories for sbatch and log files
+    def _run_slurm(self, test: bool) -> None:
+        """Submit experiments to SLURM cluster."""
         os.makedirs(self._exp_dir_slurm_files, exist_ok=True)
         os.makedirs(self._exp_dir_slurm_logs, exist_ok=True)
 
-        # Generate and save slurm files
-        slurm_files_path_l = []
-        experiment_list_chunked = []
-        for i in range(0, len(self._experiment_list), self._n_exps_in_parallel):
-            experiment_list_chunked.append(self._experiment_list[i:i + self._n_exps_in_parallel])
+        n_parallel = self._config.resources.n_exps_in_parallel
+        slurm_files: list[str] = []
 
-        for i, exps in enumerate(experiment_list_chunked):
-            command_line_l = []
-            for exp in exps:
-                exp_new_without_underscore = self.remove_last_underscores_dict(exp)
-                command_line_arguments = self._convert_to_command_line(exp_new_without_underscore)
-                results_dir = self._generate_results_dir(self._exp_dir_slurm, exp)
-                command_line_l.append(f'--results_dir {results_dir} {command_line_arguments}')
-            slurm_files_path_l += self.save_slurm(command_line_l,str(i).zfill(len(str(len(experiment_list_chunked)))))
+        # Chunk experiments for parallel execution within SLURM jobs
+        for i in range(0, len(self._experiment_list), n_parallel):
+            chunk = self._experiment_list[i:i + n_parallel]
+            command_lines = []
 
-        # Launch slurm files in parallel
-        for slurm_file_path in slurm_files_path_l:
-            command = f"sbatch {slurm_file_path}"
+            for exp in chunk:
+                clean_exp = self._clean_exp_params(exp)
+                cmd_args = _convert_to_command_line(clean_exp)
+                results_dir = self._generate_results_dir(
+                    self._exp_dir_slurm, exp)
+                command_lines.append(f"--results_dir {results_dir} {cmd_args}")
+
+            slurm_files.extend(
+                self._save_slurm(command_lines, str(i).zfill(
+                    len(str(len(self._experiment_list)))))
+            )
+
+        for slurm_file in slurm_files:
+            command = f"sbatch {slurm_file}"
             if test:
                 print(command)
             else:
                 os.system(command)
 
-    def _run_local(self, test):
-        if not test:
-            os.makedirs(self._exp_dir_local, exist_ok=True)
+    def _generate_slurm_script(self, command_lines: list[str]) -> str:
+        """Generate a SLURM batch script."""
+        cfg = self._config
+        slurm = cfg.slurm
+        res = cfg.resources
+        env = cfg.environment
 
-        module = import_module(self._exp_file)
-        experiment = module.experiment
+        # Build optional SBATCH directives
+        directives = []
+        if slurm.project_name:
+            directives.append(f"#SBATCH -A {slurm.project_name}")
+        if slurm.partition:
+            directives.append(f"#SBATCH -p {slurm.partition}")
+        if slurm.begin:
+            directives.append(f"#SBATCH --begin={slurm.begin}")
+        if slurm.gres:
+            directives.append(f"#SBATCH --gres={slurm.gres}")
+        if slurm.constraint:
+            directives.append(f"#SBATCH --constraint={slurm.constraint}")
+        if slurm.account:
+            directives.append(f"#SBATCH --account={slurm.account}")
+        if slurm.cluster:
+            directives.append(f"#SBATCH --cluster={slurm.cluster}")
 
-        if test:
-            self._test_experiment_local()
+        optional_directives = "\n".join(directives)
+        if optional_directives:
+            optional_directives += "\n"
+
+        # Environment setup
+        env_setup = ""
+        if env.conda_env:
+            home = os.getenv("HOME", "")
+            if os.path.exists(f"{home}/miniconda3"):
+                env_setup = f'eval "$({home}/miniconda3/bin/conda shell.bash hook)"\n'
+            elif os.path.exists(f"{home}/anaconda3"):
+                env_setup = f'eval "$({home}/anaconda3/bin/conda shell.bash hook)"\n'
+            else:
+                raise RuntimeError(
+                    "No miniconda3 or anaconda3 found in home directory")
+            env_setup += f"conda activate {env.conda_env}\n"
+            python_cmd = f"python {self._exp_file_path}"
         else:
-            def experiment_wrapper(params):
-                try:
-                    experiment(**params)
-                except Exception:
-                    print("Experiment failed with parameters:")
-                    print(params)
-                    traceback.print_exc()
+            env_setup = f"source {sys.prefix}/bin/activate\n"
+            repo_dir = git.Repo(
+                search_parent_directories=True).working_tree_dir
+            python_cmd = f"PYTHONPATH={repo_dir} python {self._exp_file_path}"
 
-            params_dict = get_experiment_default_params(experiment, as_string=False)
+        module_loads = ""
+        if env.initial_module_load:
+            module_loads = "\n".join(
+                f"module load {m}" for m in env.initial_module_load) + "\n"
 
-            Parallel(n_jobs=self._n_exps_in_parallel)(delayed(experiment_wrapper)(deepcopy(params))
-                                                      for params in self._generate_exp_params(params_dict))
+        # Build commands
+        commands = []
+        for cmd in command_lines:
+            seed_part = ""
+            commands.append(f"{python_cmd} \\\n\t\t{seed_part}{cmd} &")
 
-    def _run_sequential(self, test):
-        if not test:
-            os.makedirs(self._exp_dir_local, exist_ok=True)
+        commands_str = "\n\n".join(commands)
+        duration = cfg.duration.to_slurm_format()
 
-        module = import_module(self._exp_file)
-        experiment = module.experiment
+        script = f"""\
+#!/usr/bin/env bash
 
-        if test:
-            self._test_experiment_local()
-        else:
-            default_params_dict = get_experiment_default_params(experiment, as_string=False)
+###############################################################################
+# SLURM Configurations
+{optional_directives}#SBATCH -J {self._exp_name}
+#SBATCH -a 0-0
+#SBATCH -t {duration}
+#SBATCH --ntasks 1
+#SBATCH --cpus-per-task {res.n_cores}
+#SBATCH --mem-per-cpu={res.memory_per_core}
+#SBATCH -o {self._exp_dir_slurm_logs}/%A_%a.out
+#SBATCH -e {self._exp_dir_slurm_logs}/%A_%a.err
 
-            for params in self._generate_exp_params(default_params_dict):
-                try:
-                    experiment(**params)
-                except Exception:
-                    print("Experiment failed with parameters:")
-                    print(params)
-                    traceback.print_exc()
+###############################################################################
+# Setup
+echo "Starting Job $SLURM_JOB_ID, Index $SLURM_ARRAY_TASK_ID"
 
-    def _check_experiments_results_directories(self):
-        """
-        Check if the results directory produced for each experiment clash.
-        """
+{module_loads}module load Python
+{env_setup}
+
+###############################################################################
+# Run experiments
+echo "Running experiments in parallel..."
+echo "########################################################################"
+
+{commands_str}
+
+wait
+echo "########################################################################"
+echo "All experiments finished."
+"""
+
+        # Copy results after run if configured
+        if cfg.after_run_dir:
+            repo_name = git.Repo(
+                search_parent_directories=True).working_tree_dir.split("/")[-1]
+            local_dir = os.path.join(
+                cfg.after_run_dir, repo_name, self._base_dir)
+            os.makedirs(local_dir, exist_ok=True)
+            script += f"\ncp -r {self._exp_dir_slurm}/ {local_dir}/\n"
+
+        script += '\necho "...done."\n'
+        return script
+
+    def _save_slurm(self, command_lines: list[str], idx: str) -> list[str]:
+        """Save SLURM script to file and return paths."""
+        cfg = self._config
+
+        # Generate scripts for each seed if not using array tasks
+        scripts = []
+        cmd_batch = []
+
+        for cmd in command_lines:
+            for seed in range(cfg.start_seed, cfg.start_seed + cfg.n_seeds):
+                cmd_batch.append(f"--seed {seed} {cmd}")
+
+                if len(cmd_batch) >= cfg.resources.n_exps_in_parallel:
+                    scripts.append(self._generate_slurm_script(cmd_batch))
+                    cmd_batch = []
+
+        if cmd_batch:
+            scripts.append(self._generate_slurm_script(cmd_batch))
+
+        # Save scripts
+        paths = []
+        for i, script in enumerate(scripts):
+            filename = f"slurm_{self._exp_name}_{idx}_{i}.sh"
+            path = os.path.join(self._exp_dir_slurm_files, filename)
+            with open(path, "w") as f:
+                f.write(script)
+            paths.append(path)
+
+        return paths
+
+    def _generate_exp_params(self, default_params: dict[str, Any]):
+        """Generate experiment parameters for all seeds and configs."""
+        cfg = self._config
+        seeds = np.arange(cfg.start_seed, cfg.start_seed + cfg.n_seeds)
+
+        for exp in self._experiment_list:
+            params = deepcopy(default_params)
+            clean_exp = self._clean_exp_params(exp)
+            params.update(clean_exp)
+            params["results_dir"] = self._generate_results_dir(
+                self._exp_dir_local, exp)
+
+            for seed in seeds:
+                params["seed"] = int(seed)
+                yield deepcopy(params)
+
+    def _clean_exp_params(self, exp: dict[str, Any]) -> dict[str, Any]:
+        """Remove internal metadata from experiment params."""
+        return {k: v for k, v in exp.items() if not k.startswith("_")}
+
+    def _test_experiment_local(self) -> None:
+        """Print experiment commands for testing."""
         for exp in self._experiment_list:
             results_dir = self._generate_results_dir(self._exp_dir_local, exp)
-            # Check if the results directory already exists.
-            if results_dir in self._results_dir_l:
-                # Terminate to prevent overwriting the results directory.
-                raise ResultsDirException(exp, results_dir)
-            self._results_dir_l.append(results_dir)
+            clean_exp = self._clean_exp_params(exp)
 
-    def _test_experiment_local(self):
-        for exp, results_dir in zip(self._experiment_list, self._results_dir_l):
-            for i in range(self._start_seed, self._n_seeds):
-                params = str(exp).replace('{', '(').replace('}', '').replace(': ', '=').replace('\'', '')
-                if params:
-                    params += ', '
-                print('experiment' + params + 'seed=' + str(i) + ', results_dir=' + results_dir + ')')
-
-    def _generate_results_dir(self, results_dir, exp, n=6):
-        for key, value in exp.items():
-            if key.endswith('__'):
-                if self._compact_dirs:
-                    subfolder = str(value)
-                else:
-                    subfolder = key + '_' + str(value).replace(' ', '')
-                subfolder = subfolder.replace('/', '-')  # avoids creating subfolders if there is a slash in the name
-                results_dir = os.path.join(results_dir, subfolder)
-        return results_dir
-
-    def _generate_exp_params(self, default_params_dict):
-        seeds = np.arange(self._start_seed, self._start_seed + self._n_seeds)
-        for exp in self._experiment_list:
-            params_dict = deepcopy(default_params_dict)
-            exp_new_without_underscore = self.remove_last_underscores_dict(exp)
-            params_dict.update(exp_new_without_underscore)
-            if not self._results_dir_already_given:
-                params_dict['results_dir'] = self._generate_results_dir(self._exp_dir_local, exp)
-            if not self._seed_is_already_given:
-                for seed in seeds:
-                    params_dict['seed'] = int(seed)
-                    yield params_dict
-            else:
-                yield params_dict
-
-    @staticmethod
-    def remove_last_underscores_dict(exp_dict):
-        exp_dict_new = copy(exp_dict)
-        for key, value in exp_dict.items():
-            if key.endswith('__'):
-                exp_dict_new[key[:-2]] = value
-                del exp_dict_new[key]
-        return exp_dict_new
-
-    @staticmethod
-    def _convert_to_command_line(exp):
-        command_line = ''
-        for key, value in exp.items():
-            new_command = '--' + key + ' '
-
-            new_command += "'" + json.dumps(value, separators=(',', ':')) + "'" + ' '
-
-            command_line += new_command
-
-        # remove last space
-        command_line = command_line[:-1]
-
-        return command_line
-
-    @staticmethod
-    def _to_duration(days, hours, minutes, seconds):
-        h = "0" + str(hours) if hours < 10 else str(hours)
-        m = "0" + str(minutes) if minutes < 10 else str(minutes)
-        s = "0" + str(seconds) if seconds < 10 else str(seconds)
-
-        return str(days) + '-' + h + ":" + m + ":" + s
+            for seed in range(self._config.start_seed, self._config.n_seeds):
+                params_str = ", ".join(
+                    f"{k}={v!r}" for k, v in clean_exp.items())
+                print(
+                    f"experiment({params_str}, seed={seed}, results_dir={results_dir!r})")
 
     @property
-    def exp_name(self):
+    def exp_name(self) -> str:
+        """Get the experiment name (with timestamp if enabled)."""
         return self._exp_name
 
-    def log_dir(self, local=True):
-        if local:
-            return self._exp_dir_local
-        else:
-            return self._exp_dir_slurm
+    def log_dir(self, local: bool = True) -> str:
+        """Get the log directory path."""
+        return self._exp_dir_local if local else self._exp_dir_slurm
 
     @property
-    def _exp_file_path(self):
-        module = import_module(self._exp_file)
+    def _exp_file_path(self) -> str:
+        """Get the absolute path to the experiment file."""
+        module = import_module(self._config.exp_file)
         return module.__file__
 
 
-def get_experiment_default_params(func, as_string=True):
+# ==============================================================================
+# Utility functions
+# ==============================================================================
+
+
+def _get_experiment_default_params(func, as_string: bool = True) -> dict[str, Any]:
+    """Extract default parameters from experiment function signature."""
     signature = inspect.signature(func)
     defaults = {}
     for k, v in signature.parameters.items():
         if v.default is not inspect.Parameter.empty:
             if as_string:
-                defaults[k] = json.dumps(v.default, separators=(',', ':'))
+                defaults[k] = json.dumps(v.default, separators=(",", ":"))
             else:
                 defaults[k] = v.default
     return defaults
 
 
-def translate_experiment_params_to_argparse(parser, func):
-    arg_experiments = parser.add_argument_group('Experiment')
+def _convert_to_command_line(exp: dict[str, Any]) -> str:
+    """Convert experiment dict to command line arguments."""
+    parts = []
+    for key, value in exp.items():
+        json_value = json.dumps(value, separators=(",", ":"))
+        parts.append(f"--{key} '{json_value}'")
+    return " ".join(parts)
+
+
+def _has_kwargs(func) -> bool:
+    """Check if function accepts **kwargs."""
+    signature = inspect.signature(func)
+    return any(v.kind == v.VAR_KEYWORD for v in signature.parameters.values())
+
+
+def parse_args(func) -> dict[str, Any]:
+    """Parse command line arguments for an experiment function."""
+    import argparse
+
+    parser = argparse.ArgumentParser()
+
+    # Add experiment parameters from function signature
     signature = inspect.signature(func)
     for k, v in signature.parameters.items():
-        if k not in ['seed', 'results_dir']:
-            if v.default is not inspect.Parameter.empty:
-                # Convert the default argument to a JSON string
-                json_default = json.dumps(v.default, separators=(',', ':'))
-                # Add the argument as a string, where its value will be JSON stringified
-                arg_experiments.add_argument(f"--{str(k)}", type=str, default=json_default)
-    
-    return parser
+        if k not in ("seed", "results_dir") and v.default is not inspect.Parameter.empty:
+            json_default = json.dumps(v.default, separators=(",", ":"))
+            parser.add_argument(f"--{k}", type=str, default=json_default)
 
+    # Add base args
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--results_dir", type=str)
 
-def add_launcher_base_args(parser):
-    arg_default = parser.add_argument_group('Default')
-    arg_default.add_argument('--seed', type=int)
-    arg_default.add_argument('--results_dir', type=str)
-    return parser
+    # Parse
+    if _has_kwargs(func):
+        args, unknown = parser.parse_known_args()
+        kwargs = _parse_unknown_args(unknown)
+        result = vars(args)
+        result.update(kwargs)
+    else:
+        args = parser.parse_args()
+        result = vars(args)
 
-
-def has_kwargs(func):
-    signature = inspect.signature(func)
-    for k, v in signature.parameters.items():
-        if v.kind == v.VAR_KEYWORD:
-            return True
-
-    return False
-
-
-def string_to_primitive(string):
-    try:
-        return int(string)
-    except ValueError:
-        try:
-            return float(string)
-        except ValueError:
+    # Decode JSON strings
+    for k, v in list(result.items()):
+        if isinstance(v, str):
             try:
-                # boolean
-                return bool(strtobool(string))
-            except ValueError:
-                return string
+                result[k] = json.loads(v)
+            except json.JSONDecodeError:
+                pass
+
+    return result
 
 
-def parse_unknown_args(unknown):
-    kwargs = dict()
+def _parse_unknown_args(unknown: list[str]) -> dict[str, Any]:
+    """Parse unknown command line arguments."""
+    kwargs = {}
+    key_idxs = [i for i, arg in enumerate(unknown) if arg.startswith("--")]
 
-    key_idxs = [i for i, arg in enumerate(unknown) if arg.startswith('--')]
+    if not key_idxs:
+        return kwargs
 
-    if len(key_idxs) > 0:
-        key_n_args = [key_idxs[i+1] - 1 - key_idxs[i] for i in range(len(key_idxs)-1)]
-        key_n_args.append(len(unknown) - 1 - key_idxs[-1])
+    key_n_args = [
+        key_idxs[i + 1] - 1 - key_idxs[i] if i < len(key_idxs) - 1
+        else len(unknown) - 1 - key_idxs[i]
+        for i in range(len(key_idxs))
+    ]
 
-        for i, idx in enumerate(key_idxs):
-            key = unknown[idx][2:]
-            n_args = key_n_args[i]
-            if n_args > 1:
-                values = list()
+    for i, idx in enumerate(key_idxs):
+        key = unknown[idx][2:]
+        n_args = key_n_args[i]
 
-                for v in unknown[idx+1:idx + 1 + n_args]:
-                    values.append(string_to_primitive(v))
-
-                kwargs[key] = values
-
-            elif n_args == 1:
-                kwargs[key] = string_to_primitive(unknown[idx+1])
+        if n_args > 1:
+            kwargs[key] = [_string_to_primitive(
+                unknown[idx + 1 + j]) for j in range(n_args)]
+        elif n_args == 1:
+            kwargs[key] = _string_to_primitive(unknown[idx + 1])
 
     return kwargs
 
 
-def parse_args(func):
-    parser = argparse.ArgumentParser()
+def _string_to_primitive(string: str) -> int | float | bool | str:
+    """Convert string to appropriate primitive type."""
+    # Try int
+    try:
+        return int(string)
+    except ValueError:
+        pass
 
-    parser = translate_experiment_params_to_argparse(parser, func)
+    # Try float
+    try:
+        return float(string)
+    except ValueError:
+        pass
 
-    parser = add_launcher_base_args(parser)
-    parser.set_defaults(**get_experiment_default_params(func, as_string=True))
+    # Try bool
+    lower = string.lower()
+    if lower in ("true", "yes", "1"):
+        return True
+    if lower in ("false", "no", "0"):
+        return False
 
-    if has_kwargs(func):
-        args, unknown = parser.parse_known_args()
-        kwargs = parse_unknown_args(unknown)
-
-        args = vars(args)
-        args.update(kwargs)
-
-        # Now, we unload JSON string arguments into their original Python types
-        for k, v in args.items():
-            if isinstance(v, str):
-                # print(f'Loading {k} as {v}')
-                try:
-                    # Try to load the JSON string into the original data type
-                    args[k] = json.loads(v)
-                    # print(f'Loaded {k} as {args[k]}')
-                except json.JSONDecodeError:
-                    # print(f'Failed to load {k}, keeping it as string: {v}')
-                    pass  # Leave as string if not a valid JSON
-
-        return args
-    else:
-        args = parser.parse_args()
-
-        # Unload JSON string arguments into their original Python types
-        args = vars(args)
-        for k, v in args.items():
-            if isinstance(v, str):
-                # print(f'Loading {k} as {v}')
-                try:
-                    # Try to load the JSON string into the original data type
-                    args[k] = json.loads(v)
-                    # print(f'Loaded {k} as {args[k]}')
-                except json.JSONDecodeError:
-                    # print(f'Failed to load {k}, keeping it as string: {v}')
-                    pass  # Leave as string if not a valid JSON
-
-        return args
+    return string
 
 
-def run_experiment(func, args=None):
-    if not args:
+def run_experiment(func, args: dict[str, Any] | None = None) -> None:
+    """Run an experiment function with parsed or provided arguments.
+
+    Args:
+        func: The experiment function to run
+        args: Optional pre-parsed arguments. If None, parses from command line.
+    """
+    if args is None:
         args = parse_args(func)
-
     func(**args)

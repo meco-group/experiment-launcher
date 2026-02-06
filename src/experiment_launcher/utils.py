@@ -1,133 +1,178 @@
+"""Utility functions for experiment launcher."""
+
+from __future__ import annotations
+
 import datetime
 import json
 import os
 import random
 import subprocess
-from random import randint
 from shutil import which
+from typing import Any
 
 import git
-import wandb
 import yaml
 from git import InvalidGitRepositoryError
 
 
-def save_args(results_dir, args, git_repo_path=None, seed=None, save_args_as_yaml=False, print_exp_args=False):
+def save_args(
+    results_dir: str,
+    args: dict[str, Any],
+    git_repo_path: str | None = None,
+    seed: int | None = None,
+    save_args_as_yaml: bool = False,
+    print_exp_args: bool = False,
+) -> None:
+    """Save experiment arguments to a file.
+
+    Args:
+        results_dir: Directory to save the args file
+        args: Dictionary of arguments to save
+        git_repo_path: Path to git repo for hash extraction
+        seed: Optional seed for filename
+        save_args_as_yaml: If True, save as YAML; otherwise JSON
+        print_exp_args: If True, print the arguments
+    """
+    # Add git info
+    args_copy = dict(args)
     try:
         repo = git.Repo(git_repo_path, search_parent_directories=True)
-        args['git_hash'] = repo.head.object.hexsha
-        args['git_url'] = repo.remotes.origin.url
-    except InvalidGitRepositoryError:
-        args['git_hash'] = ''
-        args['git_url'] = ''
-    except ValueError:
-        args['git_hash'] = ''
-        args['git_url'] = ''
+        args_copy["git_hash"] = repo.head.object.hexsha
+        args_copy["git_url"] = repo.remotes.origin.url
+    except (InvalidGitRepositoryError, ValueError):
+        args_copy["git_hash"] = ""
+        args_copy["git_url"] = ""
 
+    # Save to file
     if save_args_as_yaml:
-        filename = 'args.yaml' if seed is None else f'args-{seed}.yaml'
-        with open(os.path.join(results_dir, filename), 'w') as f:
-            yaml.dump(args, f, Dumper=yaml.Dumper)
+        filename = "args.yaml" if seed is None else f"args-{seed}.yaml"
+        with open(os.path.join(results_dir, filename), "w") as f:
+            yaml.dump(args_copy, f, Dumper=yaml.Dumper)
     else:
-        filename = 'args.json' if seed is None else f'args-{seed}.json'
-        with open(os.path.join(results_dir, filename), 'w') as f:
-            json.dump(args, f, indent=2)
-
-    del args['git_hash']
-    del args['git_url']
+        filename = "args.json" if seed is None else f"args-{seed}.json"
+        with open(os.path.join(results_dir, filename), "w") as f:
+            json.dump(args_copy, f, indent=2)
 
     if print_exp_args:
-        print('------------------------------------------------------------------------------------')
-        print('--------> Experiment arguments')
-        print(json.dumps(args, indent=2))
-        print('------------------------------------------------------------------------------------')
+        print("-" * 80)
+        print("--------> Experiment arguments")
+        print(json.dumps({k: v for k, v in args_copy.items()
+              if not k.startswith("git_")}, indent=2))
+        print("-" * 80)
 
 
-def is_local():
-    return which('sbatch') is None
+def is_local() -> bool:
+    """Check if running locally (no SLURM available)."""
+    return which("sbatch") is None
 
 
 def start_wandb(
-        wandb_mode='disabled',
-        wandb_entity='experiment_launcher',
-        wandb_project='test_experiment_launcher',
-        wandb_group=None,
-        wandb_run_name=None,
-        **kwargs
+    config: "WandbConfig" | None = None,
+    **kwargs: Any,
 ):
-    # https://github.com/wandb/wandb/issues/3911#issuecomment-1409769887
-    # workaround to make sure that wandb does not crash
+    """Initialize Weights & Biases run.
+
+    Args:
+        config: WandbConfig instance
+        **kwargs: Additional config to log
+
+    Returns:
+        wandb.Run instance
+    """
+    import wandb
+    from experiment_launcher.config import WandbConfig
+
     os.environ["WANDB__SERVICE_WAIT"] = "600"
 
-    modes = ['online', 'offline', 'disabled']
-    assert wandb_mode in modes, f"wandb_mode must be in {modes}"
+    # If no config provided, try to create from kwargs for backward compatibility
+    # or just return None/disabled if that was the intent.
+    if config is None:
+        return wandb.init(mode="disabled", reinit=True, config=kwargs)
 
-    if wandb_mode == 'disabled':
+    if config.mode == "disabled":
         return wandb.init(mode="disabled", reinit=True)
 
-    init = dict(
-        mode=wandb_mode,
-        entity=wandb_entity,
-        project=wandb_project,
-        group=wandb_group,
-        name=wandb_run_name,
+    return wandb.init(
+        mode=config.mode,
+        entity=config.entity,
+        project=config.project,
+        group=config.group,
+        name=config.name,
         config=kwargs,
         reinit=True,
-        notes=datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S'),
+        notes=datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
     )
 
-    return wandb.init(**init)
 
+def fix_random_seed(seed: int) -> None:
+    """Fix random seeds for reproducibility.
 
-def fix_random_seed(seed):
+    Sets seeds for random, numpy, and torch if available.
+
+    Args:
+        seed: The seed value to set
+    """
     random.seed(seed)
 
     try:
         import numpy as np
-        import torch
+        np.random.seed(seed)
     except ImportError:
         pass
 
     try:
-        np.random.seed(seed)
-    except NameError:
-        pass
-
-    try:
+        import torch
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
-        # https://pytorch.org/docs/stable/notes/randomness.html#cuda-convolution-benchmarking
-        # torch.backends.cudnn.benchmark = False
-    except NameError:
+    except ImportError:
         pass
 
 
-def random_int_with_n_digits(n):
-    range_start = 10 ** (n - 1)
-    range_end = (10 ** n) - 1
-    return randint(range_start, range_end)
+def create_results_dir(kwargs: dict[str, Any], make_dirs_with_seed: bool = True) -> None:
+    """Create results directory, optionally with seed subdirectory.
 
+    Modifies kwargs in-place to update results_dir.
 
-def create_results_dir(kwargs, make_dirs_with_seed=True):
-    seed = kwargs.get('seed', None)
-    results_dir = kwargs['results_dir']
-    assert results_dir is not None, "results_dir must exist"
+    Args:
+        kwargs: Experiment kwargs containing 'results_dir' and optionally 'seed'
+        make_dirs_with_seed: If True, create seed subdirectory
+    """
+    seed = kwargs.get("seed")
+    results_dir = kwargs.get("results_dir")
+
+    if results_dir is None:
+        raise ValueError("results_dir must be specified in kwargs")
+
     if seed is None:
-        # warning
-        print("No seed was provided. The results will be saved in the same directory.")
+        print("Warning: No seed provided. Results will be saved without seed subdirectory.")
         make_dirs_with_seed = False
 
-    results_dir_new = results_dir
     if make_dirs_with_seed:
-        results_dir_new = os.path.join(results_dir_new, str(seed))
-    os.makedirs(results_dir_new, exist_ok=True)
-    kwargs['results_dir'] = results_dir_new
+        results_dir = os.path.join(results_dir, str(seed))
+
+    os.makedirs(results_dir, exist_ok=True)
+    kwargs["results_dir"] = results_dir
 
 
-def get_slurm_jobs_in_queue():
-    # Gets the number of USER jobs in the slurm qeue - running and pending
-    running = len(str(subprocess.check_output(["squeue", "-u", f"{os.getenv('USER')}", "-h", "-t", "running", "-r"]),
-                      encoding='utf-8').splitlines())
-    pending = len(str(subprocess.check_output(["squeue", "-u", f"{os.getenv('USER')}", "-h", "-t", "pending", "-r"]),
-                      encoding='utf-8').splitlines())
+def get_slurm_jobs_in_queue() -> int:
+    """Get the number of SLURM jobs in queue (running + pending).
+
+    Returns:
+        Total number of jobs for current user
+    """
+    user = os.getenv("USER", "")
+
+    running = len(
+        subprocess.check_output(
+            ["squeue", "-u", user, "-h", "-t", "running", "-r"],
+            encoding="utf-8",
+        ).splitlines()
+    )
+    pending = len(
+        subprocess.check_output(
+            ["squeue", "-u", user, "-h", "-t", "pending", "-r"],
+            encoding="utf-8",
+        ).splitlines()
+    )
+
     return running + pending
