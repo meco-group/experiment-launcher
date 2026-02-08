@@ -43,20 +43,34 @@ def save_args(
         args_copy["git_hash"] = ""
         args_copy["git_url"] = ""
 
+    # Convert Pydantic models to dicts for serialization
+    def _make_json_serializable(obj):
+        if isinstance(obj, dict):
+            return {k: _make_json_serializable(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_make_json_serializable(i) for i in obj]
+        if hasattr(obj, "model_dump"):  # Pydantic v2
+            return obj.model_dump()
+        if hasattr(obj, "dict"):  # Pydantic v1
+            return obj.dict()
+        return obj
+
+    serializable_args = _make_json_serializable(args_copy)
+
     # Save to file
     if save_args_as_yaml:
         filename = "args.yaml" if seed is None else f"args-{seed}.yaml"
         with open(os.path.join(results_dir, filename), "w") as f:
-            yaml.dump(args_copy, f, Dumper=yaml.Dumper)
+            yaml.dump(serializable_args, f, Dumper=yaml.Dumper)
     else:
         filename = "args.json" if seed is None else f"args-{seed}.json"
         with open(os.path.join(results_dir, filename), "w") as f:
-            json.dump(args_copy, f, indent=2)
+            json.dump(serializable_args, f, indent=2)
 
     if print_exp_args:
         print("-" * 80)
         print("--------> Experiment arguments")
-        print(json.dumps({k: v for k, v in args_copy.items()
+        print(json.dumps({k: v for k, v in serializable_args.items()
               if not k.startswith("git_")}, indent=2))
         print("-" * 80)
 
