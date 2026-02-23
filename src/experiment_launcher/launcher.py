@@ -6,8 +6,10 @@ import datetime
 import inspect
 import json
 import os
+import queue
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from importlib import import_module
 from typing import Any
@@ -165,22 +167,47 @@ class Launcher:
         if test:
             self._test_experiment_local()
         else:
-            def experiment_wrapper(params: dict[str, Any]) -> None:
-                try:
-                    experiment(**params)
-                except Exception:
-                    print("Experiment failed with parameters:")
-                    print(params)
-                    traceback.print_exc()
-
             default_params = _get_experiment_default_params(
                 experiment, as_string=False)
             n_parallel = self._config.resources.n_exps_in_parallel
+            manage_gpu = self._config.resources.manage_gpu_devices
 
-            Parallel(n_jobs=n_parallel)(
-                delayed(experiment_wrapper)(deepcopy(params))
-                for params in self._generate_exp_params(default_params)
-            )
+            if manage_gpu:
+                gpu_devices = _resolve_gpu_devices(self._config.resources)
+                gpu_pool = _GPUPool(gpu_devices)
+                n_parallel = len(gpu_devices)
+
+                def gpu_experiment_wrapper(params: dict[str, Any]) -> None:
+                    gpu_id = gpu_pool.acquire()
+                    try:
+                        params["device"] = f"cuda:{gpu_id}"
+                        experiment(**params)
+                    except Exception:
+                        print("Experiment failed with parameters:")
+                        print(params)
+                        traceback.print_exc()
+                    finally:
+                        gpu_pool.release(gpu_id)
+
+                all_params = [
+                    deepcopy(p)
+                    for p in self._generate_exp_params(default_params)
+                ]
+                with ThreadPoolExecutor(max_workers=n_parallel) as executor:
+                    list(executor.map(gpu_experiment_wrapper, all_params))
+            else:
+                def experiment_wrapper(params: dict[str, Any]) -> None:
+                    try:
+                        experiment(**params)
+                    except Exception:
+                        print("Experiment failed with parameters:")
+                        print(params)
+                        traceback.print_exc()
+
+                Parallel(n_jobs=n_parallel)(
+                    delayed(experiment_wrapper)(deepcopy(params))
+                    for params in self._generate_exp_params(default_params)
+                )
 
     def _run_sequential(self, test: bool) -> None:
         """Run experiments sequentially (single process)."""
@@ -195,8 +222,16 @@ class Launcher:
         else:
             default_params = _get_experiment_default_params(
                 experiment, as_string=False)
+            manage_gpu = self._config.resources.manage_gpu_devices
+            gpu_devices = None
+            if manage_gpu:
+                gpu_devices = _resolve_gpu_devices(self._config.resources)
 
+            gpu_idx = 0
             for params in self._generate_exp_params(default_params):
+                if manage_gpu and gpu_devices:
+                    params["device"] = f"cuda:{gpu_devices[gpu_idx % len(gpu_devices)]}"
+                    gpu_idx += 1
                 try:
                     experiment(**params)
                 except Exception:
@@ -425,6 +460,53 @@ echo "All experiments finished."
 # ==============================================================================
 
 
+class _GPUPool:
+    """Thread-safe pool of GPU device IDs.
+
+    Uses a blocking queue so that callers wait until a GPU is free.
+    """
+
+    def __init__(self, device_ids: list[int]) -> None:
+        self._queue: queue.Queue[int] = queue.Queue()
+        for d in device_ids:
+            self._queue.put(d)
+
+    def acquire(self) -> int:
+        """Block until a GPU is available, then return its ID."""
+        return self._queue.get()
+
+    def release(self, device_id: int) -> None:
+        """Return a GPU to the pool."""
+        self._queue.put(device_id)
+
+
+def _resolve_gpu_devices(resources) -> list[int]:
+    """Resolve the list of GPU device IDs from config or auto-detect.
+
+    Args:
+        resources: ResourceConfig instance.
+
+    Returns:
+        List of GPU device IDs.
+    """
+    if resources.gpu_devices is not None:
+        return list(resources.gpu_devices)
+
+    try:
+        import torch
+        n_gpus = torch.cuda.device_count()
+    except ImportError:
+        n_gpus = 0
+
+    if n_gpus == 0:
+        raise RuntimeError(
+            "manage_gpu_devices=True but no GPUs detected and gpu_devices not set. "
+            "Either set gpu_devices explicitly or ensure CUDA is available."
+        )
+
+    return list(range(n_gpus))
+
+
 def _get_experiment_default_params(func, as_string: bool = True) -> dict[str, Any]:
     """Extract default parameters from experiment function signature."""
     signature = inspect.signature(func)
@@ -462,13 +544,14 @@ def parse_args(func) -> dict[str, Any]:
     # Add experiment parameters from function signature
     signature = inspect.signature(func)
     for k, v in signature.parameters.items():
-        if k not in ("seed", "results_dir") and v.default is not inspect.Parameter.empty:
+        if k not in ("seed", "results_dir", "device") and v.default is not inspect.Parameter.empty:
             json_default = json.dumps(v.default, separators=(",", ":"))
             parser.add_argument(f"--{k}", type=str, default=json_default)
 
     # Add base args
     parser.add_argument("--seed", type=int)
     parser.add_argument("--results_dir", type=str)
+    parser.add_argument("--device", type=str, default="cpu")
 
     # Parse
     if _has_kwargs(func):

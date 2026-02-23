@@ -80,6 +80,14 @@ class ResourceConfig(BaseModel):
         default=2000, ge=1, description="Memory per core in MB")
     n_exps_in_parallel: int = Field(
         default=1, ge=1, description="Experiments to run in parallel")
+    manage_gpu_devices: bool = Field(
+        default=False,
+        description="If True, the launcher manages GPU device assignment. "
+                    "Each experiment receives a 'device' parameter (e.g. 'cuda:0').")
+    gpu_devices: list[int] | None = Field(
+        default=None,
+        description="List of GPU device IDs to use (e.g. [0, 1, 2]). "
+                    "If None and manage_gpu_devices=True, auto-detects via torch.cuda.device_count().")
 
 
 class EnvironmentConfig(BaseModel):
@@ -157,7 +165,8 @@ class ExperimentConfig(BaseModel):
 
     seed: int = Field(default=0, description="Random seed")
     results_dir: str = Field(default="logs", description="Results directory")
-    wandb: Optional[WandbConfig] = None
+    device: str = Field(
+        default="cpu", description="Device string (e.g. 'cuda:0')")
 
     model_config = {"extra": "allow"}
 
