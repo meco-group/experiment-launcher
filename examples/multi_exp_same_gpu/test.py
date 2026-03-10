@@ -4,14 +4,15 @@ import time
 import torch.cuda
 import wandb
 
-from src import run_experiment, single_experiment_yaml
+from experiment_launcher import run_experiment, single_experiment_yaml
 
 
 # This decorator creates results_dir as results_dir/seed, and saves the experiment arguments into a file.
 @single_experiment_yaml
 def experiment(
     #######################################
-    env: str = 'env-name',  # You need to specify the argument type if you use the automatic parser.
+    # You need to specify the argument type if you use the automatic parser.
+    env: str = 'env-name',
     tensor_size: int = 10000,
 
     debug: bool = True,
@@ -29,7 +30,8 @@ def experiment(
     # EXPERIMENT
     print(f'DEBUG MODE: {debug}')
 
-    tensor1 = torch.ones(tensor_size, device='cuda' if torch.cuda.is_available() else 'cpu')
+    tensor1 = torch.ones(
+        tensor_size, device='cuda' if torch.cuda.is_available() else 'cpu')
     tensor2 = tensor1.clone()
 
     print(f'Env: {env}')

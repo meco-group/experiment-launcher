@@ -1,6 +1,7 @@
 # Experiment Launcher
 
 Launch experiments locally or on a cluster running SLURM in a single file.  
+Fork from [experiment_launcher](https://git.ias.informatik.tu-darmstadt.de/common/experiment_launcher)
 
 ## Description 
 
@@ -12,14 +13,14 @@ It is particularly useful to run multiple seeds and/or test multiple configurati
 
 ## Installation
 
-You can install the package directly from pip with:
+You can install the package from pip with:
 ```
-pip install experiment-launcher
+pip install "experiment-launcher @ git+https://github.com/meco-group/experiment-launcher.git@v0.2.0"
 ```
 
-Otherwise, you can do a minimal installation locally with:
+If you want to install it locally, you can do so with:
 ```
-pip install  -e .
+pip install -e .
 ```
 
 ## How to Use
@@ -53,28 +54,30 @@ The best way to understand experiment launcher is to look at the basic example i
 
 **Launch file**
 - [examples/basic/launch_test.py](examples/basic/launch_test.py) consists of:
-  - Creating an instance of the `Launcher` object, that contains the SLURM or Joblib (if run locally) parameters. These are some of the important parameters. For more consult the class definition.
+  - Creating an instance of the `LauncherConfig` object, that contains the SLURM or Joblib (if run locally) parameters. These are some of the important parameters. For more consult the class definition.
     - `exp_name` is the experiment name, under which a results directory will be created
     - `exp_file` is the path to the python file where the `experiment` is implemented (without the extension `.py`)
-    - `project_name` is the project name in the cluster
     - `n_seeds` is the number of random seeds for each single experiment configuration
-    - `n_exps_in_parallel` is the number of experiments to be run in parallel. This is useful to run multiple jobs in a single GPU in the cluster
-    - `n_cores` is the number of cores for each experiment.
-       Note that if `n_exps_in_parallel > 1`, then `n_exps_in_parallel` jobs will share `n_cores`.
-       This parameter does not apply if running locally. For that you should use the linux comamnd [taskset](https://man7.org/linux/man-pages/man1/taskset.1.html)
-    - `memory_per_core` is amount of memory in MB requested for each core in SLURM. If you specify this too low, SLURM might crash.
-    - `partition` is the SLURM partition, which is cluster dependent
-    - `gres` are special resources asked for a SLURM experiment
-    - `conda_env` if you are using a conda environment, specify its name here
+  - Advanced configs are provided via nested Pydantic objects:
+    - `ResourceConfig` specifies:
+      - `n_exps_in_parallel` is the number of experiments to be run in parallel. This is useful to run multiple jobs in a single GPU in the cluster
+      - `n_cores` is the number of cores for each experiment. Note that if `n_exps_in_parallel > 1`, then `n_exps_in_parallel` jobs will share `n_cores`.
+      - `memory_per_core` is amount of memory in MB requested for each core in SLURM. If you specify this too low, SLURM might crash.
+    - `SlurmConfig` specifies:
+      - `partition` is the SLURM partition, which is cluster dependent
+      - `gres` are special resources asked for a SLURM experiment
+      - `project_name` is the project name in the cluster
+    - `EnvironmentConfig` specifies:
+      - `conda_env` if you are using a conda environment, specify its name here
+    - `DurationConfig` specifies the max runtime of the SLURM job (days, hours, minutes, seconds).
+  - Creating an instance of the `Launcher` object: `launcher = Launcher(config)`
   - Adding experiments with `launcher.add_experiment`
     - Use `launcher.add_experiment` to create an experiment for a particular configuration (e.g., different learning rates)
-    - Parameters that are followed by _**two trailing underscores**_ will be used to create experiment directories
-      - Results directories are going to be created by default as, e.g. with `param__` and `param2__`
-        - `./logs/exp_name_DATE/param1__value/param2__value/SEED/` 
-      - **Be careful** when specifying the parameters and double underscores. 
-        The launcher will throw an error if two experiments lead to the same results directory (which would be overwritten).
-      - To see this problem, uncomment the line `# dict(floating_arg=11.0, string_arg='test')` in [examples/basic/launch_test.py](examples/basic/launch_test.py)
-      - Parameters will with trailing underscores have priority over their counterparts without underscores. E.g., `env='some_env'` will be overwritten by `env__='my_env'`
+    - You can use the `Sweep` class to automatically sweep over a list of parameters. 
+    - E.g. `launcher.add_experiment(learning_rate=Sweep(values=[1e-3, 1e-4]), batch_size=32)` creates two experiments: one with `1e-3` and another with `1e-4`.
+    - Swept parameters automatically are used to organize the results directories. Results directories are going to be created by default as:
+        - `./logs/exp_name_DATE/learning_rate_0.001/SEED/` and `./logs/exp_name_DATE/learning_rate_0.0001/SEED/`
+    - If multiple sweeps are provided, the Cartesian product of all sweep values is calculated to generate the experiments.
   - Running the experiments with `launcher.run(LOCAL)`
     - This runs your experiment either locally (LOCAL: `True`) or in the cluster (LOCAL: `False`) 
 
@@ -104,6 +107,7 @@ The experiment launcher provides an easy way to integrate with Weights and Biase
     wandb_group='group_test'
   )
   ```
+- To use wandb, you need to install it with `pip install wandb` and log in with `wandb login`
   
 
 ### Running experiments with parameters in configuration files

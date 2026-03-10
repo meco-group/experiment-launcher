@@ -2,14 +2,15 @@ import os
 
 import wandb
 
-from src import run_experiment, single_experiment
+from experiment_launcher import run_experiment, single_experiment
 
 
 # This decorator creates results_dir as results_dir/seed, and saves the experiment arguments into a file.
 @single_experiment
 def experiment(
     #######################################
-    env: str = 'env',  # You need to specify the argument type if you use the automatic parser.
+    # You need to specify the argument type if you use the automatic parser.
+    env: str = 'env',
     env_param: str = 'aa',
     a: int = 1,
     boolean_param: bool = True,
@@ -34,8 +35,8 @@ def experiment(
 
     filename = os.path.join(results_dir, 'log_' + str(seed) + '.txt')
     out_str = f'Running experiment with seed {seed}, env {env}, ' \
-              f'env_param {env_param}, a {a}, ' \
-              f'boolean_param {boolean_param}, some_default_param {some_default_param}'
+        f'env_param {env_param}, a {a}, ' \
+        f'boolean_param {boolean_param}, some_default_param {some_default_param}'
     print(out_str)
     with open(filename, 'w') as file:
         file.write('Some logs in a log file.\n')
