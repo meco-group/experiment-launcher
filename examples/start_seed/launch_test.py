@@ -1,7 +1,15 @@
 import time
 from itertools import product
 
-from src import Launcher, is_local
+from experiment_launcher import (
+    Launcher,
+    LauncherConfig,
+    DurationConfig,
+    ResourceConfig,
+    SlurmConfig,
+    Sweep,
+    is_local,
+)
 
 LOCAL = is_local()
 TEST = False
@@ -31,33 +39,45 @@ else:
     if N_SEEDS <= N_SEEDS_MAX_SLURM:
         n_seeds_split = [N_SEEDS]
     elif N_SEEDS % N_SEEDS_MAX_SLURM == 0:
-        n_seeds_split = [N_SEEDS_MAX_SLURM for _ in range(N_SEEDS // N_SEEDS_MAX_SLURM)]
+        n_seeds_split = [N_SEEDS_MAX_SLURM for _ in range(
+            N_SEEDS // N_SEEDS_MAX_SLURM)]
     else:
-        n_seeds_split = [N_SEEDS_MAX_SLURM for _ in range(N_SEEDS // N_SEEDS_MAX_SLURM)] + [N_SEEDS % N_SEEDS_MAX_SLURM]
+        n_seeds_split = [N_SEEDS_MAX_SLURM for _ in range(
+            N_SEEDS // N_SEEDS_MAX_SLURM)] + [N_SEEDS % N_SEEDS_MAX_SLURM]
 
 for _n_seeds in n_seeds_split:
     print(f"---------> Running seeds {start_seed}-{start_seed + _n_seeds}")
 
     time.sleep(1)
-    launcher = Launcher(
+
+    config = LauncherConfig(
         exp_name='test_launcher',
         exp_file='test',
         # project_name='project01234',  # for hrz cluster
         n_seeds=_n_seeds,
         start_seed=start_seed,
-        n_exps_in_parallel=N_EXPS_IN_PARALLEL,
-        n_cores=N_CORES,
-        memory_per_core=MEMORY_PER_CORE,
-        days=2,
-        hours=23,
-        minutes=59,
-        seconds=0,
-        partition=PARTITION,
-        gres=GRES,
-        conda_env=CONDA_ENV,
+        resources=ResourceConfig(
+            n_exps_in_parallel=N_EXPS_IN_PARALLEL,
+            n_cores=N_CORES,
+            memory_per_core=MEMORY_PER_CORE,
+        ),
+        duration=DurationConfig(
+            days=2,
+            hours=23,
+            minutes=59,
+            seconds=0,
+        ),
+        slurm=SlurmConfig(
+            partition=PARTITION,
+            gres=GRES,
+        ),
+        environment=dict(
+            conda_env=CONDA_ENV,
+        ),
         use_timestamp=True,
         compact_dirs=False
     )
+    launcher = Launcher(config)
 
     envs = {
         'env_00': {'env_param': 'aa'},
@@ -75,22 +95,23 @@ for _n_seeds in n_seeds_split:
 
     for env in envs:
         d = envs[env]
-        for a, boolean_param in product(a_l, boolean_param_l):
-            for unknown_args in unknown_args_list:
-                launcher.add_experiment(
-                    # A subdirectory will be created for parameters with a trailing double underscore.
-                    env__=env,
-                    a__=a,
-                    boolean_param__=boolean_param,
+        for unknown_args in unknown_args_list:
+            launcher.add_experiment(
+                # A subdirectory will be created for parameters using the Sweep object.
+                env=Sweep(values=[env]),
+                a=Sweep(values=a_l),
+                boolean_param=Sweep(values=boolean_param_l),
 
-                    env='some_env',  # This value will be overwritten by env__
+                # This value will be overwritten by the Sweep `env` above
+                # (although new API does not have priority logic, Sweeps override defaults)
+                # left here to maintain similar structure to old example
 
-                    **d,
-                    some_default_param=some_default_param,
+                **d,
+                some_default_param=some_default_param,
 
-                    **unknown_args,
-                    debug=False,
-                )
+                **unknown_args,
+                debug=False,
+            )
 
     launcher.run(LOCAL, TEST)
 

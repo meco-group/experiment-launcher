@@ -1,4 +1,12 @@
-from src import Launcher, is_local
+from experiment_launcher import (
+    Launcher,
+    LauncherConfig,
+    DurationConfig,
+    ResourceConfig,
+    SlurmConfig,
+    Sweep,
+    is_local,
+)
 
 LOCAL = is_local()
 TEST = False
@@ -18,24 +26,34 @@ PARTITION = 'rtx2,rtx' if USE_CUDA else 'amd2,amd'
 GRES = 'gpu:1' if USE_CUDA else None  # gpu:rtx2080:1, gpu:rtx3080:1
 CONDA_ENV = 'el'  # None
 
-launcher = Launcher(
+config = LauncherConfig(
     exp_name='test_launcher',
     exp_file='test',
     # project_name='project01234',  # for hrz cluster
     n_seeds=N_SEEDS,
-    n_exps_in_parallel=N_EXPS_IN_PARALLEL,
-    n_cores=N_CORES,
-    memory_per_core=MEMORY_PER_CORE,
-    days=2,
-    hours=23,
-    minutes=59,
-    seconds=0,
-    partition=PARTITION,
-    conda_env=CONDA_ENV,
-    gres=GRES,
+    resources=ResourceConfig(
+        n_cores=N_CORES,
+        memory_per_core=MEMORY_PER_CORE,
+        n_exps_in_parallel=N_EXPS_IN_PARALLEL,
+    ),
+    duration=DurationConfig(
+        days=2,
+        hours=23,
+        minutes=59,
+        seconds=0,
+    ),
+    slurm=SlurmConfig(
+        partition=PARTITION,
+        gres=GRES,
+    ),
+    environment=dict(
+        conda_env=CONDA_ENV,
+    ),
     use_timestamp=True,
     compact_dirs=False
 )
+
+launcher = Launcher(config)
 
 tensor_sizes_l = [1000000 + i for i in range(5)]
 
@@ -48,8 +66,8 @@ wandb_options = dict(
 
 for tensor_size in tensor_sizes_l:
     launcher.add_experiment(
-        # A subdirectory will be created for parameters with a trailing double underscore.
-        tensor_size__=tensor_size,
+        # A subdirectory will be created for parameters using the Sweep object.
+        tensor_size=Sweep(values=[tensor_size]),
 
         debug=False,
 
