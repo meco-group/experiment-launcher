@@ -15,7 +15,7 @@ It is particularly useful to run multiple seeds and/or test multiple configurati
 
 You can install the package from pip with:
 ```
-pip install "experiment-launcher @ git+https://github.com/meco-group/experiment-launcher.git@v0.2.0"
+pip install "experiment-launcher-meco
 ```
 
 If you want to install it locally, you can do so with:
