@@ -5,7 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "experiment-launcher-meco"
 version = "4.0.0"
-description = "Launch experiments locally or on SLURM clusters with ease"
+authors = [
+  { name="Edward Sandra", email="edward.sandra@kuleuven.be" }
+]
+description = "Launch experiments locally or on SLURM clusters with ease. Fork from 'experiment-launcher'."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
